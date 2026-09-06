@@ -45,18 +45,58 @@ where id = (select id from auth.users where email = 'you@example.com');
 
 Reload the app and an "Admin" link appears at the bottom.
 
+## Payouts: manual for now, on purpose
+
+There's no automatic EcoCash/OneMoney API call yet — getting one requires
+registering as an EcoCash merchant with Econet first (a business process,
+not something that can be wired up without those credentials). Even once
+that exists, the actual API call has to run server-side (a Supabase Edge
+Function), never in the browser, since merchant credentials can't be shipped
+to client-side JS.
+
+So for now, payouts are tracked but sent by hand:
+
+1. A worker adds their EcoCash number once (prompted the first time they're
+   in worker mode).
+2. When a client clicks **Approve & release payment**, the job moves to a
+   "payout pending" state instead of instantly showing as paid.
+3. The **Admin → Payouts** view lists everything waiting to be paid, with
+   the worker's name, EcoCash number, and net amount.
+4. An admin sends that amount from their own EcoCash app, then records the
+   transaction reference in the app, which marks it as sent.
+
+This is a real, usable workflow for a small pilot — plenty of early-stage
+Zimbabwean marketplaces operate exactly this way before automating. See
+[supabase/functions/ecocash-payout/index.ts](supabase/functions/ecocash-payout/index.ts)
+for the scaffolding to replace this with a real API call once merchant
+credentials exist, and
+[supabase/migrations/0002_payouts.sql](supabase/migrations/0002_payouts.sql)
+for the schema change (run this if you set up the database before this
+feature existed).
+
 ## Current limitations (prototype, not production)
 
-- **Payments**: the payout breakdown is calculated and displayed, but no
-  real money moves yet — EcoCash/OneMoney integration is not implemented.
+- **Payments**: tracked and manually reconciled (see above); no automatic
+  EcoCash/OneMoney API call yet.
 - **Wallet balance**: still a hardcoded placeholder ($42.50), not tied to
-  real funds.
-- **Auth**: email-based OTP only; no phone/SMS sign-in yet (matches how
-  most target users would actually reach the app, but costs money via an
-  SMS provider like Twilio — deferred until closer to launch).
+  real funds — this is separate from the payout tracking above and covers
+  a client's own account balance, which isn't implemented.
+- **Auth**: email-based magic link only; no phone/SMS sign-in yet (matches
+  how most target users would actually reach the app, but costs money via
+  an SMS provider like Twilio — deferred until closer to launch).
+- **Email deliverability**: Resend's free `resend.dev` sender domain can
+  only send to the Resend account's own email address. A real domain needs
+  to be verified in Resend before anyone besides you can sign up.
+- **Profile visibility**: any signed-in user can currently read any other
+  user's profile row via the API, including `is_admin` and `ecocash_number`
+  — fine for a small trusted pilot, worth tightening (column-level
+  policies or a public-safe view) before a wider launch.
 
 ## Natural next steps
 
 1. ~~Real backend + database (shared job board across all users/devices).~~ ✅
-2. ~~Real accounts/auth.~~ ✅ (email OTP via Supabase Auth)
-3. Real EcoCash/OneMoney payment integration.
+2. ~~Real accounts/auth.~~ ✅ (email magic link via Supabase Auth)
+3. Real EcoCash/OneMoney payment integration — payout *tracking* is done
+   (see above); the actual automated API call is still pending merchant
+   access.
+4. Verify a real domain for email so anyone can sign up, not just you.

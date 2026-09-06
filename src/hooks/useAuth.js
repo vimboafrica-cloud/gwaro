@@ -125,6 +125,22 @@ export function useAuth() {
     }
   }
 
+  async function updateEcoCashNumber(ecocashNumber) {
+    if (!profile) return false;
+    const previous = profile;
+    setProfile({ ...profile, ecocash_number: ecocashNumber }); // optimistic
+    const { error: updateError } = await supabase
+      .from("profiles")
+      .update({ ecocash_number: ecocashNumber })
+      .eq("id", profile.id);
+    if (updateError) {
+      setProfile(previous);
+      setError(updateError.message);
+      return false;
+    }
+    return true;
+  }
+
   async function signOut() {
     await supabase.auth.signOut();
     setPendingEmail("");
@@ -140,6 +156,7 @@ export function useAuth() {
     sendLink,
     createProfile,
     switchRole,
+    updateEcoCashNumber,
     signOut,
   };
 }

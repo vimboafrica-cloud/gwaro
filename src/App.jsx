@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import {
   Wallet, FileText, PenLine, Mic, Briefcase, Clock, CheckCircle2,
-  Flag, Star, Inbox, PlusCircle, ArrowRight, Loader2, AlertTriangle, Mail
+  Flag, Star, Inbox, PlusCircle, ArrowRight, Loader2, AlertTriangle, Mail, Smartphone
 } from "lucide-react";
 import { supabaseConfigured } from "./lib/supabaseClient";
 import { useAuth } from "./hooks/useAuth";
@@ -130,6 +130,38 @@ function JobCard({ job, children }) {
   );
 }
 
+function PayoutRow({ job, onMarkSent }) {
+  const [reference, setReference] = useState("");
+  const { net } = payoutBreakdown(Number(job.budget));
+  return (
+    <JobCard job={job}>
+      <div className="flex flex-col items-end gap-2 w-56">
+        <div className="text-xs w-full flex items-center justify-between" style={{ color: COLORS.inkMuted }}>
+          <span className="flex items-center gap-1"><Smartphone size={12} /> {job.worker_name}</span>
+          <span style={{ color: COLORS.ink, fontWeight: 500 }}>
+            {job.worker_profile?.ecocash_number || "no number on file"}
+          </span>
+        </div>
+        <div className="text-sm font-medium w-full text-right">Send ${net.toFixed(2)}</div>
+        <input
+          value={reference}
+          onChange={(e) => setReference(e.target.value)}
+          placeholder="EcoCash transaction ref"
+          className="w-full px-2 py-1.5 text-xs rounded-sm"
+          style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+        />
+        <button
+          onClick={() => onMarkSent(job.id, reference)}
+          className="w-full text-sm font-medium px-3 py-1.5 rounded-sm"
+          style={{ background: COLORS.teal, color: COLORS.paper }}
+        >
+          Mark payout sent
+        </button>
+      </div>
+    </JobCard>
+  );
+}
+
 function EmptyState({ text, action }) {
   return (
     <div
@@ -191,6 +223,7 @@ export default function Gwaro() {
 
   const [emailInput, setEmailInput] = useState("");
   const [profileForm, setProfileForm] = useState({ name: "", role: "client" });
+  const [ecocashInput, setEcocashInput] = useState("");
 
   const [tab, setTab] = useState("browse");
   const [viewMode, setViewMode] = useState("app"); // "app" | "admin"
@@ -365,6 +398,7 @@ export default function Gwaro() {
   const role = profile.role;
   const jobs = jobsApi.jobs;
   const flaggedJobs = jobs.filter((j) => j.flagged);
+  const pendingPayouts = jobs.filter((j) => j.payout_status === "pending");
 
   function updateJob(id, patch) {
     jobsApi.updateJob(id, patch);
@@ -389,9 +423,17 @@ export default function Gwaro() {
   }
 
   function resolveDispute(id, action) {
-    if (action === "release") updateJob(id, { flagged: false, status: "approved" });
+    if (action === "release") updateJob(id, { flagged: false, status: "approved", payout_status: "pending" });
     if (action === "refund") updateJob(id, { flagged: false, status: "cancelled" });
     if (action === "dismiss") updateJob(id, { flagged: false });
+  }
+
+  function markPayoutSent(id, reference) {
+    updateJob(id, {
+      payout_status: "sent",
+      payout_reference: reference.trim() || null,
+      payout_sent_at: new Date().toISOString(),
+    });
   }
 
   // ---------------- render: admin ----------------
@@ -410,41 +452,64 @@ export default function Gwaro() {
               ← Back to app
             </button>
           </div>
-          <div className="space-y-3">
-            <p className="text-sm mb-1" style={{ color: COLORS.inkMuted }}>
+          <section className="mb-8">
+            <h2 className="text-sm font-semibold mb-3">Reported jobs</h2>
+            <p className="text-sm mb-3" style={{ color: COLORS.inkMuted }}>
               {flaggedJobs.length === 0
                 ? "No open reports right now."
                 : `${flaggedJobs.length} job${flaggedJobs.length > 1 ? "s" : ""} reported and waiting on a decision.`}
             </p>
-            {flaggedJobs.length === 0 && <EmptyState text="Reported jobs will show up here for review." />}
-            {flaggedJobs.map((job) => (
-              <JobCard key={job.id} job={job}>
-                <div className="flex flex-col items-end gap-2">
-                  <button
-                    onClick={() => resolveDispute(job.id, "release")}
-                    className="text-sm font-medium px-3 py-1.5 rounded-sm w-48 text-center"
-                    style={{ background: COLORS.teal, color: COLORS.paper }}
-                  >
-                    Release payment to worker
-                  </button>
-                  <button
-                    onClick={() => resolveDispute(job.id, "refund")}
-                    className="text-sm font-medium px-3 py-1.5 rounded-sm w-48 text-center"
-                    style={{ background: COLORS.rust, color: "white" }}
-                  >
-                    Refund client
-                  </button>
-                  <button
-                    onClick={() => resolveDispute(job.id, "dismiss")}
-                    className="text-xs w-48 text-center"
-                    style={{ color: COLORS.inkMuted }}
-                  >
-                    Dismiss report
-                  </button>
-                </div>
-              </JobCard>
-            ))}
-          </div>
+            <div className="space-y-3">
+              {flaggedJobs.length === 0 && <EmptyState text="Reported jobs will show up here for review." />}
+              {flaggedJobs.map((job) => (
+                <JobCard key={job.id} job={job}>
+                  <div className="flex flex-col items-end gap-2">
+                    <button
+                      onClick={() => resolveDispute(job.id, "release")}
+                      className="text-sm font-medium px-3 py-1.5 rounded-sm w-48 text-center"
+                      style={{ background: COLORS.teal, color: COLORS.paper }}
+                    >
+                      Release payment to worker
+                    </button>
+                    <button
+                      onClick={() => resolveDispute(job.id, "refund")}
+                      className="text-sm font-medium px-3 py-1.5 rounded-sm w-48 text-center"
+                      style={{ background: COLORS.rust, color: "white" }}
+                    >
+                      Refund client
+                    </button>
+                    <button
+                      onClick={() => resolveDispute(job.id, "dismiss")}
+                      className="text-xs w-48 text-center"
+                      style={{ color: COLORS.inkMuted }}
+                    >
+                      Dismiss report
+                    </button>
+                  </div>
+                </JobCard>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <h2 className="text-sm font-semibold mb-3">Payouts</h2>
+            <p className="text-sm mb-3" style={{ color: COLORS.inkMuted }}>
+              {pendingPayouts.length === 0
+                ? "Nothing waiting to be paid out."
+                : `${pendingPayouts.length} payout${pendingPayouts.length > 1 ? "s" : ""} approved and waiting to be sent.`}
+            </p>
+            <p className="text-xs mb-3 flex items-start gap-1.5" style={{ color: COLORS.inkMuted }}>
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              No automatic EcoCash integration yet — send each payout from your own EcoCash app,
+              then record the transaction reference here.
+            </p>
+            <div className="space-y-3">
+              {pendingPayouts.length === 0 && <EmptyState text="Approved jobs waiting on payment show up here." />}
+              {pendingPayouts.map((job) => (
+                <PayoutRow key={job.id} job={job} onMarkSent={markPayoutSent} />
+              ))}
+            </div>
+          </section>
         </div>
       </div>
     );
@@ -539,6 +604,33 @@ export default function Gwaro() {
             </button>
           ))}
         </div>
+
+        {role === "worker" && !profile.ecocash_number && (
+          <form
+            onSubmit={(e) => { e.preventDefault(); if (ecocashInput.trim()) { auth.updateEcoCashNumber(ecocashInput.trim()); setEcocashInput(""); } }}
+            className="flex items-center gap-2 mb-6 p-3 rounded-sm flex-wrap"
+            style={{ background: COLORS.ochreSoft, border: `1px solid ${COLORS.line}` }}
+          >
+            <Smartphone size={14} style={{ color: COLORS.ochre }} className="shrink-0" />
+            <span className="text-xs" style={{ color: COLORS.ink }}>
+              Add your EcoCash number so clients can pay you once you claim a job.
+            </span>
+            <input
+              value={ecocashInput}
+              onChange={(e) => setEcocashInput(e.target.value)}
+              placeholder="e.g. 0771234567"
+              className="text-sm px-2 py-1 rounded-sm flex-1 min-w-[140px]"
+              style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+            />
+            <button
+              type="submit"
+              className="text-xs font-medium px-3 py-1.5 rounded-sm"
+              style={{ background: COLORS.ochre, color: "white" }}
+            >
+              Save
+            </button>
+          </form>
+        )}
 
         {/* BROWSE */}
         {tab === "browse" && (
@@ -694,7 +786,7 @@ export default function Gwaro() {
                           <span>${net.toFixed(2)}</span>
                         </div>
                         <button
-                          onClick={() => updateJob(job.id, { status: "approved" })}
+                          onClick={() => updateJob(job.id, { status: "approved", payout_status: "pending" })}
                           className="mt-2 w-full text-sm font-medium px-3 py-1.5 rounded-sm"
                           style={{ background: COLORS.ochre, color: "white" }}
                         >
@@ -714,7 +806,18 @@ export default function Gwaro() {
 
                     {job.status === "approved" && role === "worker" && (
                       <div className="text-right">
-                        <div className="text-sm font-medium" style={{ color: COLORS.sage }}>Paid ${net.toFixed(2)}</div>
+                        {job.payout_status === "sent" ? (
+                          <>
+                            <div className="text-sm font-medium" style={{ color: COLORS.sage }}>Paid ${net.toFixed(2)}</div>
+                            {job.payout_reference && (
+                              <div className="text-xs" style={{ color: COLORS.inkMuted }}>ref: {job.payout_reference}</div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="text-sm flex items-center justify-end gap-1" style={{ color: COLORS.ochre }}>
+                            <Loader2 size={12} className="animate-spin" /> Payment pending (${net.toFixed(2)})
+                          </div>
+                        )}
                         {job.rating && <Stars value={job.rating} />}
                       </div>
                     )}
