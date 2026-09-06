@@ -190,7 +190,6 @@ export default function Gwaro() {
   const jobsApi = useJobs(jobsEnabled);
 
   const [emailInput, setEmailInput] = useState("");
-  const [codeInput, setCodeInput] = useState("");
   const [profileForm, setProfileForm] = useState({ name: "", role: "client" });
 
   const [tab, setTab] = useState("browse");
@@ -247,7 +246,7 @@ export default function Gwaro() {
           Typing and writing jobs, matched locally. Sign in with your email — no password needed.
         </p>
         <form
-          onSubmit={(e) => { e.preventDefault(); if (emailInput.trim()) auth.sendCode(emailInput.trim()); }}
+          onSubmit={(e) => { e.preventDefault(); if (emailInput.trim()) auth.sendLink(emailInput.trim()); }}
         >
           <Field label="Email address">
             <input
@@ -269,50 +268,33 @@ export default function Gwaro() {
             style={{ background: COLORS.ochre, color: "white", opacity: auth.busy ? 0.7 : 1 }}
           >
             {auth.busy ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
-            Send me a code
+            Send me a sign-in link
           </button>
         </form>
       </CenteredCard>
     );
   }
 
-  // ---------------- render: enter code ----------------
-  if (auth.authStage === "enter-code") {
+  // ---------------- render: check email ----------------
+  if (auth.authStage === "check-email") {
     return (
       <CenteredCard>
         <Logo />
-        <p className="text-sm mb-5" style={{ color: COLORS.inkMuted }}>
-          We sent a 6-digit code to <strong>{auth.pendingEmail}</strong>. Enter it below.
+        <p className="text-sm mb-4" style={{ color: COLORS.inkMuted }}>
+          We sent a sign-in link to <strong>{auth.pendingEmail}</strong>. Open it on this device
+          to continue — this page will pick up automatically once you do.
         </p>
-        <form onSubmit={(e) => { e.preventDefault(); if (codeInput.trim()) auth.verifyCode(codeInput.trim()); }}>
-          <Field label="Code">
-            <input
-              autoFocus
-              inputMode="numeric"
-              required
-              value={codeInput}
-              onChange={(e) => setCodeInput(e.target.value)}
-              placeholder="123456"
-              className="w-full px-3 py-2 text-sm rounded-sm tracking-widest"
-              style={{ background: "white", border: `1px solid ${COLORS.line}` }}
-            />
-          </Field>
-          {auth.error && <p className="text-xs mt-2" style={{ color: COLORS.rust }}>{auth.error}</p>}
-          <button
-            type="submit"
-            disabled={auth.busy || !codeInput.trim()}
-            className="w-full mt-4 text-sm font-medium px-4 py-2 rounded-sm"
-            style={{ background: COLORS.ochre, color: "white", opacity: auth.busy ? 0.7 : 1 }}
-          >
-            {auth.busy ? "Verifying…" : "Verify & sign in"}
-          </button>
-        </form>
+        <div className="flex items-center gap-2 text-sm mb-4" style={{ color: COLORS.inkMuted }}>
+          <Loader2 size={14} className="animate-spin" /> Waiting for you to click the link…
+        </div>
+        {auth.error && <p className="text-xs mb-3" style={{ color: COLORS.rust }}>{auth.error}</p>}
         <button
-          onClick={() => { setCodeInput(""); auth.sendCode(auth.pendingEmail); }}
-          className="text-xs mt-3 underline"
+          onClick={() => auth.sendLink(auth.pendingEmail)}
+          disabled={auth.busy}
+          className="text-xs underline"
           style={{ color: COLORS.inkMuted }}
         >
-          Resend code
+          Resend link
         </button>
       </CenteredCard>
     );

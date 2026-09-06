@@ -1,15 +1,20 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, supabaseConfigured } from "../lib/supabaseClient";
 
-// Drives real Supabase Auth (passwordless email OTP) plus the app-specific
-// `profiles` row (display name + client/worker role) that Supabase Auth
-// itself doesn't know about.
+// Drives real Supabase Auth (passwordless email magic link) plus the
+// app-specific `profiles` row (display name + client/worker role) that
+// Supabase Auth itself doesn't know about.
+//
+// Magic link rather than a 6-digit code: Supabase's built-in email sender
+// (free tier, no custom SMTP) uses a fixed template that isn't editable, and
+// that template only carries the confirmation link, not a {{ .Token }}
+// code. The link click-through works with that default template as-is.
 //
 // authStage:
 //   "loading"        - checking for an existing session on boot
 //   "unconfigured"   - no Supabase env vars set (see .env.example)
 //   "enter-email"    - signed out, waiting for an email address
-//   "enter-code"     - a code was emailed, waiting for the 6-digit OTP
+//   "check-email"    - a link was emailed, waiting for it to be clicked
 //   "onboarding"     - signed in, but no profile row yet (first sign-in)
 //   "ready"          - signed in with a profile loaded
 export function useAuth() {
@@ -70,34 +75,20 @@ export function useAuth() {
     };
   }, [loadProfile]);
 
-  async function sendCode(email) {
+  async function sendLink(email) {
     setError("");
     setBusy(true);
-    const { error: otpError } = await supabase.auth.signInWithOtp({ email });
+    const { error: otpError } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.origin },
+    });
     setBusy(false);
     if (otpError) {
       setError(otpError.message);
       return false;
     }
     setPendingEmail(email);
-    setAuthStage("enter-code");
-    return true;
-  }
-
-  async function verifyCode(code) {
-    setError("");
-    setBusy(true);
-    const { error: verifyError } = await supabase.auth.verifyOtp({
-      email: pendingEmail,
-      token: code,
-      type: "email",
-    });
-    setBusy(false);
-    if (verifyError) {
-      setError(verifyError.message);
-      return false;
-    }
-    // onAuthStateChange above picks up the new session and moves the stage on.
+    setAuthStage("check-email");
     return true;
   }
 
@@ -146,8 +137,7 @@ export function useAuth() {
     pendingEmail,
     error,
     busy,
-    sendCode,
-    verifyCode,
+    sendLink,
     createProfile,
     switchRole,
     signOut,
