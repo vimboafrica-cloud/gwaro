@@ -6,7 +6,6 @@ import {
 
 const JOBS_KEY = "gwaro:jobs";
 const PROFILE_KEY = "gwaro:profile";
-const STORAGE_TIMEOUT_MS = 4000;
 
 // ---- design tokens ----
 const COLORS = {
@@ -86,44 +85,47 @@ function payoutBreakdown(budget) {
   return { commission, transferCost, net };
 }
 
-// races a promise against a timeout so a hung storage call can never freeze the UI
-function withTimeout(promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error("storage timeout")), ms)),
-  ]);
-}
-
+// ---- persistence layer ----
+// This prototype originally ran inside a Claude Artifact, which provides a
+// sandboxed `window.storage` API. Outside that sandbox (a plain local/deployed
+// app) there is no such API, so this swaps in localStorage instead — same
+// async-shaped interface, so the rest of the app doesn't need to change.
+// localStorage is per-browser, not shared between people; a real backend
+// (with real accounts) is the natural next step once this needs to work
+// across devices/users for real.
 function storageAvailable() {
-  return typeof window !== "undefined" && window.storage && typeof window.storage.get === "function";
-}
-
-async function safeGet(key, shared) {
-  if (!storageAvailable()) return { ok: false, value: null };
   try {
-    const result = await withTimeout(window.storage.get(key, shared), STORAGE_TIMEOUT_MS);
-    return { ok: true, value: result ? result.value : null };
-  } catch (err) {
-    return { ok: false, value: null };
-  }
-}
-
-async function safeSet(key, value, shared) {
-  if (!storageAvailable()) return false;
-  try {
-    const result = await withTimeout(window.storage.set(key, value, shared), STORAGE_TIMEOUT_MS);
-    return !!result;
-  } catch (err) {
+    return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+  } catch {
     return false;
   }
 }
 
-async function safeDelete(key, shared) {
+async function safeGet(key) {
+  if (!storageAvailable()) return { ok: false, value: null };
+  try {
+    return { ok: true, value: window.localStorage.getItem(key) };
+  } catch {
+    return { ok: false, value: null };
+  }
+}
+
+async function safeSet(key, value) {
   if (!storageAvailable()) return false;
   try {
-    await withTimeout(window.storage.delete(key, shared), STORAGE_TIMEOUT_MS);
+    window.localStorage.setItem(key, value);
     return true;
-  } catch (err) {
+  } catch {
+    return false;
+  }
+}
+
+async function safeDelete(key) {
+  if (!storageAvailable()) return false;
+  try {
+    window.localStorage.removeItem(key);
+    return true;
+  } catch {
     return false;
   }
 }
@@ -277,7 +279,7 @@ export default function Gwaro() {
   const wallet = 42.5;
   const role = profile ? profile.role : "client";
 
-  // ---- boot: load profile + jobs together, bounded by a hard timeout ----
+  // ---- boot: load profile + jobs together ----
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -285,8 +287,8 @@ export default function Gwaro() {
       if (!available && !cancelled) setStorageOn(false);
 
       const [profileResult, jobsResult] = await Promise.all([
-        safeGet(PROFILE_KEY, false),
-        safeGet(JOBS_KEY, true),
+        safeGet(PROFILE_KEY),
+        safeGet(JOBS_KEY),
       ]);
 
       if (cancelled) return;
@@ -314,7 +316,7 @@ export default function Gwaro() {
     if (!hasBooted.current || !storageOn) return;
     (async () => {
       setSaving(true);
-      const ok = await safeSet(JOBS_KEY, JSON.stringify(jobs), true);
+      const ok = await safeSet(JOBS_KEY, JSON.stringify(jobs));
       setSaveError(!ok);
       setSaving(false);
     })();
@@ -326,19 +328,19 @@ export default function Gwaro() {
     if (!trimmed) return;
     const newProfile = { name: trimmed, role: profileForm.role };
     setProfile(newProfile); // move forward immediately regardless of storage
-    if (storageOn) safeSet(PROFILE_KEY, JSON.stringify(newProfile), false);
+    if (storageOn) safeSet(PROFILE_KEY, JSON.stringify(newProfile));
   }
 
   function switchRole(r) {
     const updated = { ...profile, role: r };
     setProfile(updated);
-    if (storageOn) safeSet(PROFILE_KEY, JSON.stringify(updated), false);
+    if (storageOn) safeSet(PROFILE_KEY, JSON.stringify(updated));
   }
 
   function signOut() {
     setProfile(null);
     setProfileForm({ name: "", role: "client" });
-    if (storageOn) safeDelete(PROFILE_KEY, false);
+    if (storageOn) safeDelete(PROFILE_KEY);
   }
 
   function updateJob(id, patch) {
@@ -620,7 +622,7 @@ export default function Gwaro() {
             ) : saving ? (
               <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> saving…</span>
             ) : (
-              "shared board · synced"
+              "saved on this device"
             )}
           </p>
         </div>
