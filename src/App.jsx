@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState } from "react";
 import {
   Wallet, FileText, PenLine, Mic, Briefcase, Clock, CheckCircle2,
-  Flag, Star, Inbox, PlusCircle, ArrowRight, Loader2, AlertTriangle
+  Flag, Star, Inbox, PlusCircle, ArrowRight, Loader2, AlertTriangle, Mail
 } from "lucide-react";
-
-const JOBS_KEY = "gwaro:jobs";
-const PROFILE_KEY = "gwaro:profile";
+import { supabaseConfigured } from "./lib/supabaseClient";
+import { useAuth } from "./hooks/useAuth";
+import { useJobs } from "./hooks/useJobs";
 
 // ---- design tokens ----
 const COLORS = {
@@ -32,102 +32,11 @@ const CATEGORY_META = {
 };
 const CATEGORIES = Object.keys(CATEGORY_META);
 
-const seedJobs = [
-  {
-    id: "GW-0001",
-    category: "Transcription",
-    title: "Sunday sermon, 45 minutes",
-    description: "Audio file of a church service, need clean text with speaker labels.",
-    budget: 8,
-    deadline: "2026-09-08",
-    status: "open",
-    clientName: "Tanaka M.",
-    workerName: null,
-    rating: null,
-    flagged: false,
-  },
-  {
-    id: "GW-0002",
-    category: "CV & business docs",
-    title: "CV + cover letter for teaching post",
-    description: "Update an old CV and write a cover letter for a primary school teaching vacancy.",
-    budget: 6,
-    deadline: "2026-09-10",
-    status: "in_progress",
-    clientName: "Rufaro C.",
-    workerName: "Nyasha K.",
-    rating: null,
-    flagged: false,
-  },
-  {
-    id: "GW-0003",
-    category: "Typing",
-    title: "Handwritten minutes, 12 pages",
-    description: "Scanned photos of AGM minutes, need it typed up in a Word-ready format.",
-    budget: 10,
-    deadline: "2026-09-06",
-    status: "approved",
-    clientName: "Blessing N.",
-    workerName: "Chiedza T.",
-    rating: 5,
-    flagged: false,
-  },
-];
-
-function nextId(jobs) {
-  return `GW-${String(jobs.length + 1).padStart(4, "0")}`;
-}
-
 function payoutBreakdown(budget) {
   const commission = budget * 0.15;
   const transferCost = budget * 0.03;
   const net = budget - commission - transferCost;
   return { commission, transferCost, net };
-}
-
-// ---- persistence layer ----
-// This prototype originally ran inside a Claude Artifact, which provides a
-// sandboxed `window.storage` API. Outside that sandbox (a plain local/deployed
-// app) there is no such API, so this swaps in localStorage instead — same
-// async-shaped interface, so the rest of the app doesn't need to change.
-// localStorage is per-browser, not shared between people; a real backend
-// (with real accounts) is the natural next step once this needs to work
-// across devices/users for real.
-function storageAvailable() {
-  try {
-    return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
-  } catch {
-    return false;
-  }
-}
-
-async function safeGet(key) {
-  if (!storageAvailable()) return { ok: false, value: null };
-  try {
-    return { ok: true, value: window.localStorage.getItem(key) };
-  } catch {
-    return { ok: false, value: null };
-  }
-}
-
-async function safeSet(key, value) {
-  if (!storageAvailable()) return false;
-  try {
-    window.localStorage.setItem(key, value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function safeDelete(key) {
-  if (!storageAvailable()) return false;
-  try {
-    window.localStorage.removeItem(key);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function StatusBadge({ status, flagged }) {
@@ -211,9 +120,9 @@ function JobCard({ job, children }) {
           <p className="text-sm mb-2" style={{ color: COLORS.inkMuted }}>{job.description}</p>
         )}
         <div className="flex items-center gap-3 text-xs flex-wrap" style={{ color: COLORS.inkMuted }}>
-          <span className="font-medium" style={{ color: COLORS.ink }}>${job.budget.toFixed(2)}</span>
-          <span className="flex items-center gap-1"><Clock size={11} /> {job.deadline}</span>
-          <span>{job.clientName}{job.workerName ? ` → ${job.workerName}` : ""}</span>
+          <span className="font-medium" style={{ color: COLORS.ink }}>${Number(job.budget).toFixed(2)}</span>
+          {job.deadline && <span className="flex items-center gap-1"><Clock size={11} /> {job.deadline}</span>}
+          <span>{job.client_name}{job.worker_name ? ` → ${job.worker_name}` : ""}</span>
         </div>
       </div>
       <div className="shrink-0">{children}</div>
@@ -251,21 +160,41 @@ function Field({ label, children }) {
   );
 }
 
-export default function Gwaro() {
-  const [booting, setBooting] = useState(true);
-  const [profile, setProfile] = useState(null);
-  const [jobs, setJobs] = useState(seedJobs);
-  const [storageOn, setStorageOn] = useState(true);
-  const [saveError, setSaveError] = useState(false);
-  const [saving, setSaving] = useState(false);
+function CenteredCard({ children }) {
+  return (
+    <div
+      className="min-h-screen w-full flex items-center justify-center font-sans px-5"
+      style={{ background: COLORS.paper, color: COLORS.ink }}
+    >
+      <div className="w-full max-w-sm p-6 rounded-sm" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
+function Logo() {
+  return (
+    <h1
+      className="text-2xl font-bold mb-1"
+      style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", color: COLORS.teal }}
+    >
+      Gwaro
+    </h1>
+  );
+}
+
+export default function Gwaro() {
+  const auth = useAuth();
+  const jobsEnabled = auth.authStage === "ready";
+  const jobsApi = useJobs(jobsEnabled);
+
+  const [emailInput, setEmailInput] = useState("");
+  const [codeInput, setCodeInput] = useState("");
   const [profileForm, setProfileForm] = useState({ name: "", role: "client" });
 
   const [tab, setTab] = useState("browse");
   const [viewMode, setViewMode] = useState("app"); // "app" | "admin"
-  const [adminUnlocked, setAdminUnlocked] = useState(false);
-  const [adminCode, setAdminCode] = useState("");
-  const [adminError, setAdminError] = useState(false);
 
   const [form, setForm] = useState({
     category: CATEGORIES[0],
@@ -275,119 +204,28 @@ export default function Gwaro() {
     deadline: "",
   });
 
-  const hasBooted = useRef(false);
-  const wallet = 42.5;
-  const role = profile ? profile.role : "client";
+  const wallet = 42.5; // placeholder until real EcoCash/OneMoney integration
 
-  // ---- boot: load profile + jobs together ----
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const available = storageAvailable();
-      if (!available && !cancelled) setStorageOn(false);
-
-      const [profileResult, jobsResult] = await Promise.all([
-        safeGet(PROFILE_KEY),
-        safeGet(JOBS_KEY),
-      ]);
-
-      if (cancelled) return;
-
-      if (profileResult.ok && profileResult.value) {
-        try { setProfile(JSON.parse(profileResult.value)); } catch { setProfile(null); }
-      } else {
-        setProfile(null);
-      }
-
-      if (jobsResult.ok && jobsResult.value) {
-        try { setJobs(JSON.parse(jobsResult.value)); } catch { setJobs(seedJobs); }
-      } else {
-        setJobs(seedJobs);
-      }
-
-      hasBooted.current = true;
-      setBooting(false);
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  // ---- persist job board changes in the background (never blocks the UI) ----
-  useEffect(() => {
-    if (!hasBooted.current || !storageOn) return;
-    (async () => {
-      setSaving(true);
-      const ok = await safeSet(JOBS_KEY, JSON.stringify(jobs));
-      setSaveError(!ok);
-      setSaving(false);
-    })();
-  }, [jobs, storageOn]);
-
-  function handleOnboard(e) {
-    e.preventDefault();
-    const trimmed = profileForm.name.trim();
-    if (!trimmed) return;
-    const newProfile = { name: trimmed, role: profileForm.role };
-    setProfile(newProfile); // move forward immediately regardless of storage
-    if (storageOn) safeSet(PROFILE_KEY, JSON.stringify(newProfile));
+  // ---------------- render: not configured ----------------
+  if (!supabaseConfigured) {
+    return (
+      <CenteredCard>
+        <Logo />
+        <p className="text-sm mb-4" style={{ color: COLORS.inkMuted }}>
+          Supabase isn't configured yet. Copy <code>.env.example</code> to{" "}
+          <code>.env.local</code>, fill in your project's URL and anon key, then restart{" "}
+          <code>npm run dev</code>.
+        </p>
+        <p className="text-xs flex items-start gap-1.5" style={{ color: COLORS.rust }}>
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          See README.md for the full setup steps, including running supabase/schema.sql.
+        </p>
+      </CenteredCard>
+    );
   }
 
-  function switchRole(r) {
-    const updated = { ...profile, role: r };
-    setProfile(updated);
-    if (storageOn) safeSet(PROFILE_KEY, JSON.stringify(updated));
-  }
-
-  function signOut() {
-    setProfile(null);
-    setProfileForm({ name: "", role: "client" });
-    if (storageOn) safeDelete(PROFILE_KEY);
-  }
-
-  function updateJob(id, patch) {
-    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, ...patch } : j)));
-  }
-
-  function handlePost(e) {
-    e.preventDefault();
-    if (!form.title.trim() || !form.budget || !form.deadline) return;
-    const job = {
-      id: nextId(jobs),
-      category: form.category,
-      title: form.title.trim(),
-      description: form.description.trim(),
-      budget: Number(form.budget),
-      deadline: form.deadline,
-      status: "open",
-      clientName: profile.name,
-      workerName: null,
-      rating: null,
-      flagged: false,
-    };
-    setJobs((prev) => [job, ...prev]);
-    setForm({ category: CATEGORIES[0], title: "", description: "", budget: "", deadline: "" });
-    setTab("mine");
-  }
-
-  const flaggedJobs = jobs.filter((j) => j.flagged);
-
-  function handleAdminUnlock(e) {
-    e.preventDefault();
-    if (adminCode === "gwaro-admin") {
-      setAdminUnlocked(true);
-      setAdminError(false);
-    } else {
-      setAdminError(true);
-    }
-  }
-
-  function resolveDispute(id, action) {
-    if (action === "release") updateJob(id, { flagged: false, status: "approved" });
-    if (action === "refund") updateJob(id, { flagged: false, status: "cancelled" });
-    if (action === "dismiss") updateJob(id, { flagged: false });
-  }
-
-  // ---------------- render: boot screen ----------------
-  if (booting) {
+  // ---------------- render: loading ----------------
+  if (auth.authStage === "loading") {
     return (
       <div
         className="min-h-screen w-full flex items-center justify-center font-sans"
@@ -400,27 +238,95 @@ export default function Gwaro() {
     );
   }
 
-  // ---------------- render: onboarding ----------------
-  if (!profile) {
+  // ---------------- render: enter email ----------------
+  if (auth.authStage === "enter-email") {
     return (
-      <div
-        className="min-h-screen w-full flex items-center justify-center font-sans px-5"
-        style={{ background: COLORS.paper, color: COLORS.ink }}
-      >
+      <CenteredCard>
+        <Logo />
+        <p className="text-sm mb-5" style={{ color: COLORS.inkMuted }}>
+          Typing and writing jobs, matched locally. Sign in with your email — no password needed.
+        </p>
         <form
-          onSubmit={handleOnboard}
-          className="w-full max-w-sm p-6 rounded-sm"
-          style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+          onSubmit={(e) => { e.preventDefault(); if (emailInput.trim()) auth.sendCode(emailInput.trim()); }}
         >
-          <h1
-            className="text-2xl font-bold mb-1"
-            style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", color: COLORS.teal }}
+          <Field label="Email address">
+            <input
+              autoFocus
+              type="email"
+              required
+              value={emailInput}
+              onChange={(e) => setEmailInput(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full px-3 py-2 text-sm rounded-sm"
+              style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+            />
+          </Field>
+          {auth.error && <p className="text-xs mt-2" style={{ color: COLORS.rust }}>{auth.error}</p>}
+          <button
+            type="submit"
+            disabled={auth.busy || !emailInput.trim()}
+            className="w-full mt-4 text-sm font-medium px-4 py-2 rounded-sm flex items-center justify-center gap-1.5"
+            style={{ background: COLORS.ochre, color: "white", opacity: auth.busy ? 0.7 : 1 }}
           >
-            Gwaro
-          </h1>
-          <p className="text-sm mb-5" style={{ color: COLORS.inkMuted }}>
-            Typing and writing jobs, matched locally. What should we call you?
-          </p>
+            {auth.busy ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
+            Send me a code
+          </button>
+        </form>
+      </CenteredCard>
+    );
+  }
+
+  // ---------------- render: enter code ----------------
+  if (auth.authStage === "enter-code") {
+    return (
+      <CenteredCard>
+        <Logo />
+        <p className="text-sm mb-5" style={{ color: COLORS.inkMuted }}>
+          We sent a 6-digit code to <strong>{auth.pendingEmail}</strong>. Enter it below.
+        </p>
+        <form onSubmit={(e) => { e.preventDefault(); if (codeInput.trim()) auth.verifyCode(codeInput.trim()); }}>
+          <Field label="Code">
+            <input
+              autoFocus
+              inputMode="numeric"
+              required
+              value={codeInput}
+              onChange={(e) => setCodeInput(e.target.value)}
+              placeholder="123456"
+              className="w-full px-3 py-2 text-sm rounded-sm tracking-widest"
+              style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+            />
+          </Field>
+          {auth.error && <p className="text-xs mt-2" style={{ color: COLORS.rust }}>{auth.error}</p>}
+          <button
+            type="submit"
+            disabled={auth.busy || !codeInput.trim()}
+            className="w-full mt-4 text-sm font-medium px-4 py-2 rounded-sm"
+            style={{ background: COLORS.ochre, color: "white", opacity: auth.busy ? 0.7 : 1 }}
+          >
+            {auth.busy ? "Verifying…" : "Verify & sign in"}
+          </button>
+        </form>
+        <button
+          onClick={() => { setCodeInput(""); auth.sendCode(auth.pendingEmail); }}
+          className="text-xs mt-3 underline"
+          style={{ color: COLORS.inkMuted }}
+        >
+          Resend code
+        </button>
+      </CenteredCard>
+    );
+  }
+
+  // ---------------- render: onboarding (first sign-in, no profile yet) ----------------
+  if (auth.authStage === "onboarding") {
+    return (
+      <CenteredCard>
+        <Logo />
+        <p className="text-sm mb-5" style={{ color: COLORS.inkMuted }}>
+          Almost there — what should we call you?
+        </p>
+        <form onSubmit={(e) => { e.preventDefault(); const trimmed = profileForm.name.trim(); if (trimmed) auth.createProfile({ name: trimmed, role: profileForm.role }); }}>
           <label className="block mb-4">
             <span className="block text-xs mb-1" style={{ color: COLORS.inkMuted }}>Your name</span>
             <input
@@ -455,34 +361,61 @@ export default function Gwaro() {
               ))}
             </div>
           </label>
+          {auth.error && <p className="text-xs mb-3" style={{ color: COLORS.rust }}>{auth.error}</p>}
           <button
             type="submit"
-            disabled={!profileForm.name.trim()}
+            disabled={auth.busy || !profileForm.name.trim()}
             className="w-full text-sm font-medium px-4 py-2 rounded-sm"
             style={{ background: COLORS.ochre, color: "white", opacity: profileForm.name.trim() ? 1 : 0.6 }}
           >
             Continue
           </button>
-          {!storageOn && (
-            <p className="text-xs mt-3 flex items-center gap-1" style={{ color: COLORS.rust }}>
-              <AlertTriangle size={12} /> Running without saved storage — your data won't persist after this closes.
-            </p>
-          )}
           <p className="text-xs mt-3" style={{ color: COLORS.inkMuted }}>
             You can do both later — this just sets where you start.
           </p>
         </form>
-      </div>
+      </CenteredCard>
     );
+  }
+
+  // ---------------- from here: auth.authStage === "ready" ----------------
+  const { profile } = auth;
+  const role = profile.role;
+  const jobs = jobsApi.jobs;
+  const flaggedJobs = jobs.filter((j) => j.flagged);
+
+  function updateJob(id, patch) {
+    jobsApi.updateJob(id, patch);
+  }
+
+  async function handlePost(e) {
+    e.preventDefault();
+    if (!form.title.trim() || !form.budget || !form.deadline) return;
+    const ok = await jobsApi.postJob({
+      category: form.category,
+      title: form.title.trim(),
+      description: form.description.trim(),
+      budget: Number(form.budget),
+      deadline: form.deadline,
+      clientId: profile.id,
+      clientName: profile.name,
+    });
+    if (ok) {
+      setForm({ category: CATEGORIES[0], title: "", description: "", budget: "", deadline: "" });
+      setTab("mine");
+    }
+  }
+
+  function resolveDispute(id, action) {
+    if (action === "release") updateJob(id, { flagged: false, status: "approved" });
+    if (action === "refund") updateJob(id, { flagged: false, status: "cancelled" });
+    if (action === "dismiss") updateJob(id, { flagged: false });
   }
 
   // ---------------- render: admin ----------------
   if (viewMode === "admin") {
     return (
-      <div
-        className="min-h-screen w-full font-sans"
-        style={{ background: COLORS.paper, color: COLORS.ink }}
-      >
+      <div className="min-h-screen w-full font-sans" style={{ background: COLORS.paper, color: COLORS.ink }}>
         <div className="max-w-2xl mx-auto px-5 py-8">
           <div className="flex items-center justify-between mb-6">
             <h1
@@ -491,82 +424,45 @@ export default function Gwaro() {
             >
               Gwaro admin
             </h1>
-            <button
-              onClick={() => { setViewMode("app"); setAdminUnlocked(false); setAdminCode(""); }}
-              className="text-sm"
-              style={{ color: COLORS.inkMuted }}
-            >
+            <button onClick={() => setViewMode("app")} className="text-sm" style={{ color: COLORS.inkMuted }}>
               ← Back to app
             </button>
           </div>
-
-          {!adminUnlocked ? (
-            <form
-              onSubmit={handleAdminUnlock}
-              className="max-w-sm p-5 rounded-sm"
-              style={{ background: "white", border: `1px solid ${COLORS.line}` }}
-            >
-              <p className="text-sm mb-3" style={{ color: COLORS.inkMuted }}>
-                Enter the admin passcode. This is a demo-only gate, not real security.
-              </p>
-              <input
-                type="password"
-                value={adminCode}
-                onChange={(e) => { setAdminCode(e.target.value); setAdminError(false); }}
-                placeholder="Passcode"
-                className="w-full px-3 py-2 text-sm rounded-sm mb-2"
-                style={{ background: "white", border: `1px solid ${COLORS.line}` }}
-              />
-              {adminError && (
-                <p className="text-xs mb-2" style={{ color: COLORS.rust }}>That's not it — try again.</p>
-              )}
-              <button
-                type="submit"
-                className="w-full text-sm font-medium px-4 py-2 rounded-sm"
-                style={{ background: COLORS.teal, color: COLORS.paper }}
-              >
-                Unlock
-              </button>
-            </form>
-          ) : (
-            <div className="space-y-3">
-              <p className="text-sm mb-1" style={{ color: COLORS.inkMuted }}>
-                {flaggedJobs.length === 0
-                  ? "No open reports right now."
-                  : `${flaggedJobs.length} job${flaggedJobs.length > 1 ? "s" : ""} reported and waiting on a decision.`}
-              </p>
-              {flaggedJobs.length === 0 && (
-                <EmptyState text="Reported jobs will show up here for review." />
-              )}
-              {flaggedJobs.map((job) => (
-                <JobCard key={job.id} job={job}>
-                  <div className="flex flex-col items-end gap-2">
-                    <button
-                      onClick={() => resolveDispute(job.id, "release")}
-                      className="text-sm font-medium px-3 py-1.5 rounded-sm w-48 text-center"
-                      style={{ background: COLORS.teal, color: COLORS.paper }}
-                    >
-                      Release payment to worker
-                    </button>
-                    <button
-                      onClick={() => resolveDispute(job.id, "refund")}
-                      className="text-sm font-medium px-3 py-1.5 rounded-sm w-48 text-center"
-                      style={{ background: COLORS.rust, color: "white" }}
-                    >
-                      Refund client
-                    </button>
-                    <button
-                      onClick={() => resolveDispute(job.id, "dismiss")}
-                      className="text-xs w-48 text-center"
-                      style={{ color: COLORS.inkMuted }}
-                    >
-                      Dismiss report
-                    </button>
-                  </div>
-                </JobCard>
-              ))}
-            </div>
-          )}
+          <div className="space-y-3">
+            <p className="text-sm mb-1" style={{ color: COLORS.inkMuted }}>
+              {flaggedJobs.length === 0
+                ? "No open reports right now."
+                : `${flaggedJobs.length} job${flaggedJobs.length > 1 ? "s" : ""} reported and waiting on a decision.`}
+            </p>
+            {flaggedJobs.length === 0 && <EmptyState text="Reported jobs will show up here for review." />}
+            {flaggedJobs.map((job) => (
+              <JobCard key={job.id} job={job}>
+                <div className="flex flex-col items-end gap-2">
+                  <button
+                    onClick={() => resolveDispute(job.id, "release")}
+                    className="text-sm font-medium px-3 py-1.5 rounded-sm w-48 text-center"
+                    style={{ background: COLORS.teal, color: COLORS.paper }}
+                  >
+                    Release payment to worker
+                  </button>
+                  <button
+                    onClick={() => resolveDispute(job.id, "refund")}
+                    className="text-sm font-medium px-3 py-1.5 rounded-sm w-48 text-center"
+                    style={{ background: COLORS.rust, color: "white" }}
+                  >
+                    Refund client
+                  </button>
+                  <button
+                    onClick={() => resolveDispute(job.id, "dismiss")}
+                    className="text-xs w-48 text-center"
+                    style={{ color: COLORS.inkMuted }}
+                  >
+                    Dismiss report
+                  </button>
+                </div>
+              </JobCard>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -574,7 +470,7 @@ export default function Gwaro() {
 
   // ---------------- render: main app ----------------
   const myJobs = jobs.filter((j) =>
-    role === "client" ? j.clientName === profile.name : j.workerName === profile.name
+    role === "client" ? j.client_id === profile.id : j.worker_id === profile.id
   );
   const openJobs = jobs.filter((j) => j.status === "open");
 
@@ -611,18 +507,14 @@ export default function Gwaro() {
             Typing and writing jobs, matched locally.
           </p>
           <p className="text-xs flex items-center gap-1" style={{ color: COLORS.inkMuted }}>
-            {!storageOn ? (
+            {jobsApi.error ? (
               <span className="flex items-center gap-1" style={{ color: COLORS.rust }}>
-                <AlertTriangle size={12} /> local only — not saved
+                <AlertTriangle size={12} /> {jobsApi.error}
               </span>
-            ) : saveError ? (
-              <span className="flex items-center gap-1" style={{ color: COLORS.rust }}>
-                <AlertTriangle size={12} /> couldn't save last change
-              </span>
-            ) : saving ? (
-              <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> saving…</span>
+            ) : jobsApi.loading ? (
+              <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> loading…</span>
             ) : (
-              "saved on this device"
+              "shared board · live"
             )}
           </p>
         </div>
@@ -633,7 +525,7 @@ export default function Gwaro() {
             {["client", "worker"].map((r) => (
               <button
                 key={r}
-                onClick={() => switchRole(r)}
+                onClick={() => auth.switchRole(r)}
                 className="px-3 py-1.5 text-sm rounded-sm capitalize transition-colors"
                 style={role === r ? { background: COLORS.teal, color: COLORS.paper } : { color: COLORS.inkMuted }}
               >
@@ -644,7 +536,7 @@ export default function Gwaro() {
           <p className="text-xs" style={{ color: COLORS.inkMuted }}>
             Signed in as <span style={{ color: COLORS.ink, fontWeight: 500 }}>{profile.name}</span>
             {" · "}
-            <button onClick={signOut} className="underline">not you?</button>
+            <button onClick={auth.signOut} className="underline">not you?</button>
           </p>
         </div>
 
@@ -674,7 +566,7 @@ export default function Gwaro() {
               <JobCard key={job.id} job={job}>
                 {role === "worker" ? (
                   <button
-                    onClick={() => updateJob(job.id, { status: "in_progress", workerName: profile.name })}
+                    onClick={() => updateJob(job.id, { status: "in_progress", worker_id: profile.id, worker_name: profile.name })}
                     className="text-sm font-medium px-3 py-1.5 rounded-sm flex items-center gap-1"
                     style={{ background: COLORS.teal, color: COLORS.paper }}
                   >
@@ -682,7 +574,7 @@ export default function Gwaro() {
                   </button>
                 ) : (
                   <span className="text-sm" style={{ color: COLORS.inkMuted }}>
-                    {job.clientName === profile.name ? "Your job — awaiting a worker" : "Awaiting a worker"}
+                    {job.client_id === profile.id ? "Your job — awaiting a worker" : "Awaiting a worker"}
                   </span>
                 )}
               </JobCard>
@@ -695,7 +587,7 @@ export default function Gwaro() {
           (role !== "client" ? (
             <EmptyState
               text="Posting jobs is for clients."
-              action={{ label: "Switch to client", onClick: () => switchRole("client") }}
+              action={{ label: "Switch to client", onClick: () => auth.switchRole("client") }}
             />
           ) : (
             <form onSubmit={handlePost} className="space-y-4 max-w-md">
@@ -774,7 +666,7 @@ export default function Gwaro() {
               />
             )}
             {myJobs.map((job) => {
-              const { commission, transferCost, net } = payoutBreakdown(job.budget);
+              const { commission, transferCost, net } = payoutBreakdown(Number(job.budget));
               return (
                 <JobCard key={job.id} job={job}>
                   <div className="flex flex-col items-end gap-2">
@@ -805,7 +697,7 @@ export default function Gwaro() {
                       <div className="text-xs rounded-sm px-3 py-2 w-56" style={{ background: COLORS.paperDark }}>
                         <div className="flex justify-between mb-0.5">
                           <span style={{ color: COLORS.inkMuted }}>Job budget</span>
-                          <span>${job.budget.toFixed(2)}</span>
+                          <span>${Number(job.budget).toFixed(2)}</span>
                         </div>
                         <div className="flex justify-between mb-0.5">
                           <span style={{ color: COLORS.inkMuted }}>Platform fee (15%)</span>
@@ -861,20 +753,22 @@ export default function Gwaro() {
           </div>
         )}
 
-        <div className="mt-8 pt-4 flex justify-center" style={{ borderTop: `1px solid ${COLORS.line}` }}>
-          <button
-            onClick={() => setViewMode("admin")}
-            className="text-xs flex items-center gap-1.5"
-            style={{ color: COLORS.inkMuted }}
-          >
-            Admin
-            {flaggedJobs.length > 0 && (
-              <span className="px-1.5 py-0.5 rounded-sm" style={{ background: COLORS.rustSoft, color: COLORS.rust }}>
-                {flaggedJobs.length} report{flaggedJobs.length > 1 ? "s" : ""}
-              </span>
-            )}
-          </button>
-        </div>
+        {profile.is_admin && (
+          <div className="mt-8 pt-4 flex justify-center" style={{ borderTop: `1px solid ${COLORS.line}` }}>
+            <button
+              onClick={() => setViewMode("admin")}
+              className="text-xs flex items-center gap-1.5"
+              style={{ color: COLORS.inkMuted }}
+            >
+              Admin
+              {flaggedJobs.length > 0 && (
+                <span className="px-1.5 py-0.5 rounded-sm" style={{ background: COLORS.rustSoft, color: COLORS.rust }}>
+                  {flaggedJobs.length} report{flaggedJobs.length > 1 ? "s" : ""}
+                </span>
+              )}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
