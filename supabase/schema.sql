@@ -64,7 +64,11 @@ create table if not exists public.jobs (
   description text default '',
   budget numeric not null check (budget > 0),
   deadline date,
-  status text not null default 'open' check (status in ('open','in_progress','delivered','approved','cancelled')),
+  -- 'awaiting_payment' until an admin confirms the client's EcoCash payment
+  -- arrived — see supabase/migrations/0004_payment_gate.sql for why this
+  -- exists (nothing captured any payment at all before it did) and the
+  -- trigger below that makes it a real gate, not just a UI convention.
+  status text not null default 'awaiting_payment' check (status in ('awaiting_payment','open','in_progress','delivered','approved','cancelled')),
   client_id uuid not null references public.profiles(id),
   client_name text not null,
   worker_id uuid references public.profiles(id),
@@ -76,6 +80,10 @@ create table if not exists public.jobs (
   payout_status text not null default 'none' check (payout_status in ('none','pending','sent')),
   payout_reference text,
   payout_sent_at timestamptz,
+  -- Manual EcoCash collection tracking (client -> platform), the mirror
+  -- image of the payout fields above. See 0004_payment_gate.sql.
+  collection_reference text,
+  collection_confirmed_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -86,22 +94,27 @@ create policy "jobs are viewable by everyone signed in"
   on public.jobs for select
   using (auth.role() = 'authenticated');
 
+-- Requires status = 'awaiting_payment' at insert time — a client can't post
+-- a job that's already 'open', only the payment-gate trigger below (via an
+-- admin) can move it there.
 drop policy if exists "clients can post their own jobs" on public.jobs;
 create policy "clients can post their own jobs"
   on public.jobs for insert
-  with check (auth.uid() = client_id);
+  with check (auth.uid() = client_id and status = 'awaiting_payment');
 
 -- Covers: a client editing/cancelling their own job, a worker claiming an
--- unclaimed job or updating a job already assigned to them, and an admin
--- resolving a disputed job (or recording a payout) regardless of who it
--- belongs to.
+-- open unclaimed job or updating a job already assigned to them, and an
+-- admin resolving a disputed job (or recording a payout/payment)
+-- regardless of who it belongs to. "Unclaimed" only counts as claimable
+-- when status = 'open' — an awaiting_payment job has worker_id null too,
+-- but shouldn't be claimable yet.
 drop policy if exists "clients, involved workers, and admins can update jobs" on public.jobs;
 create policy "clients, involved workers, and admins can update jobs"
   on public.jobs for update
   using (
     auth.uid() = client_id
     or auth.uid() = worker_id
-    or worker_id is null
+    or (worker_id is null and status = 'open')
     or public.is_admin()
   )
   with check (
@@ -109,6 +122,29 @@ create policy "clients, involved workers, and admins can update jobs"
     or auth.uid() = worker_id
     or public.is_admin()
   );
+
+-- Payment gate: only an admin can move a job out of 'awaiting_payment'.
+-- This is enforced at the database level (not just hidden in the UI)
+-- because the anon key is public in the shipped JS — without this, anyone
+-- could call the API directly and open their own job without paying.
+create or replace function public.enforce_payment_gate()
+returns trigger
+language plpgsql
+security definer
+as $$
+begin
+  if old.status = 'awaiting_payment' and new.status <> 'awaiting_payment' and not public.is_admin() then
+    raise exception 'Only an admin can confirm payment and open this job';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists jobs_enforce_payment_gate on public.jobs;
+create trigger jobs_enforce_payment_gate
+  before update on public.jobs
+  for each row
+  execute function public.enforce_payment_gate();
 
 -- Realtime: lets every open browser see job changes live (claims, delivery,
 -- approval, disputes, payouts) without polling. Enable it either here or via

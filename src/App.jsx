@@ -32,6 +32,10 @@ const CATEGORY_META = {
 };
 const CATEGORIES = Object.keys(CATEGORY_META);
 
+// TODO: replace with the real EcoCash number clients should pay into.
+// Everything a client posts is worthless as revenue until this is real.
+const PLATFORM_ECOCASH_NUMBER = "REPLACE-WITH-YOUR-ECOCASH-NUMBER";
+
 // Formats a local Zimbabwean number (e.g. "0771234567") into the digits-only
 // international form wa.me needs (e.g. "263771234567"). Passes through
 // numbers that already look international.
@@ -82,6 +86,7 @@ function StatusBadge({ status, flagged }) {
     );
   }
   const map = {
+    awaiting_payment: { label: "Awaiting payment", bg: COLORS.ochreSoft, fg: COLORS.ochre },
     open: { label: "Open", bg: COLORS.tealSoft, fg: COLORS.teal },
     in_progress: { label: "In progress", bg: COLORS.ochreSoft, fg: COLORS.ochre },
     delivered: { label: "Awaiting approval", bg: COLORS.sageSoft, fg: COLORS.sage },
@@ -187,6 +192,37 @@ function PayoutRow({ job, onMarkSent }) {
           style={{ background: COLORS.teal, color: COLORS.paper }}
         >
           Mark payout sent
+        </button>
+      </div>
+    </JobCard>
+  );
+}
+
+function CollectionRow({ job, onConfirm }) {
+  const [reference, setReference] = useState("");
+  return (
+    <JobCard job={job}>
+      <div className="flex flex-col items-end gap-2 w-56">
+        <div className="text-xs w-full flex items-center justify-between" style={{ color: COLORS.inkMuted }}>
+          <span className="flex items-center gap-1"><Smartphone size={12} /> {job.client_name}</span>
+          <span style={{ color: COLORS.ink, fontWeight: 500 }}>
+            {job.client_profile?.phone || "no number on file"}
+          </span>
+        </div>
+        <div className="text-sm font-medium w-full text-right">Expect ${Number(job.budget).toFixed(2)}</div>
+        <input
+          value={reference}
+          onChange={(e) => setReference(e.target.value)}
+          placeholder="EcoCash transaction ref"
+          className="w-full px-2 py-1.5 text-xs rounded-sm"
+          style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+        />
+        <button
+          onClick={() => onConfirm(job.id, reference)}
+          className="w-full text-sm font-medium px-3 py-1.5 rounded-sm"
+          style={{ background: COLORS.ochre, color: "white" }}
+        >
+          Mark payment received
         </button>
       </div>
     </JobCard>
@@ -450,6 +486,15 @@ export default function Gwaro() {
   const jobs = jobsApi.jobs;
   const flaggedJobs = jobs.filter((j) => j.flagged);
   const pendingPayouts = jobs.filter((j) => j.payout_status === "pending");
+  const awaitingPayment = jobs.filter((j) => j.status === "awaiting_payment");
+
+  function confirmPaymentReceived(id, reference) {
+    updateJob(id, {
+      status: "open",
+      collection_reference: reference.trim() || null,
+      collection_confirmed_at: new Date().toISOString(),
+    });
+  }
 
   function updateJob(id, patch) {
     jobsApi.updateJob(id, patch);
@@ -503,6 +548,23 @@ export default function Gwaro() {
               ← Back to app
             </button>
           </div>
+          <section className="mb-8">
+            <h2 className="text-sm font-semibold mb-3">Incoming payments</h2>
+            <p className="text-sm mb-3" style={{ color: COLORS.inkMuted }}>
+              {awaitingPayment.length === 0
+                ? "Nothing waiting on a client payment."
+                : `${awaitingPayment.length} job${awaitingPayment.length > 1 ? "s" : ""} posted, waiting for payment before going live.`}
+            </p>
+            <div className="space-y-3">
+              {awaitingPayment.length === 0 && (
+                <EmptyState text="New jobs show up here until you confirm the client's EcoCash payment arrived." />
+              )}
+              {awaitingPayment.map((job) => (
+                <CollectionRow key={job.id} job={job} onConfirm={confirmPaymentReceived} />
+              ))}
+            </div>
+          </section>
+
           <section className="mb-8">
             <h2 className="text-sm font-semibold mb-3">Reported jobs</h2>
             <p className="text-sm mb-3" style={{ color: COLORS.inkMuted }}>
@@ -829,6 +891,17 @@ export default function Gwaro() {
                         <ContactLink label="Client" name={job.client_name} phone={job.client_profile?.phone} />
                       )
                     )}
+                    {role === "client" && job.status === "awaiting_payment" && (
+                      <div className="text-xs rounded-sm px-3 py-2 w-56 text-right" style={{ background: COLORS.paperDark }}>
+                        <div style={{ color: COLORS.inkMuted }}>Send this job's budget via EcoCash to:</div>
+                        <div className="text-sm font-medium my-1">{PLATFORM_ECOCASH_NUMBER}</div>
+                        <div className="font-medium">${Number(job.budget).toFixed(2)}</div>
+                        <div className="mt-1" style={{ color: COLORS.inkMuted }}>
+                          We'll open it up to workers once payment is confirmed.
+                        </div>
+                      </div>
+                    )}
+
                     {role === "worker" && job.status === "in_progress" && !job.flagged && (
                       <div className="flex items-center gap-3">
                         <button

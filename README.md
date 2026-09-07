@@ -45,6 +45,44 @@ where id = (select id from auth.users where email = 'you@example.com');
 
 Reload the app and an "Admin" link appears at the bottom.
 
+## Payment gate: a posted job doesn't go live until it's paid for
+
+Previously nothing captured any payment at all, from anyone, ever — a
+client could post, get matched, and pay nothing, since "budget" was just a
+number on the screen. Now:
+
+1. A client posts a job — it starts as **"Awaiting payment"**, invisible to
+   workers (not in Browse jobs).
+2. The client's "My jobs" view shows exactly where to send the money: your
+   platform's EcoCash number.
+3. **Admin → Incoming payments** lists every job waiting on this, with the
+   client's name/phone and the amount to expect.
+4. Once you've actually received it (checked in your own EcoCash app), mark
+   it received with the transaction reference — only then does the job flip
+   to "Open" and become claimable, and only then can client/worker see each
+   other's contact info at all.
+
+**Before this works, you must set your real EcoCash number** in
+[src/App.jsx](src/App.jsx) — search for `PLATFORM_ECOCASH_NUMBER` near the
+top and replace the placeholder. Nothing prevents the app from running with
+the placeholder still in place, so don't forget this.
+
+This is enforced at the database level, not just hidden in the UI: a
+trigger blocks *any* attempt (from the app, or someone calling the Supabase
+API directly with the public anon key) to move a job out of
+`awaiting_payment` unless it's done by an admin account. Claiming a job is
+similarly restricted to jobs actually in `open` status, not just "no worker
+assigned yet" — see
+[supabase/migrations/0004_payment_gate.sql](supabase/migrations/0004_payment_gate.sql).
+
+**What this doesn't solve**: once a worker is revealed to a client (after a
+first paid job), nothing stops them from arranging future jobs directly
+over WhatsApp and skipping the platform entirely. That's a real, permanent
+tradeoff of doing off-platform contact exchange — see the section below.
+Mitigating it further (in-app masked messaging, non-circumvention terms,
+loyalty/reputation incentives to stay on-platform) is worth revisiting once
+there's real usage to observe.
+
 ## Getting client and worker in touch
 
 There's no in-app chat or file upload yet, so once a job is claimed, each
