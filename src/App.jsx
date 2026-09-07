@@ -32,9 +32,9 @@ const CATEGORY_META = {
 };
 const CATEGORIES = Object.keys(CATEGORY_META);
 
-// TODO: replace with the real EcoCash number clients should pay into.
-// Everything a client posts is worthless as revenue until this is real.
-const PLATFORM_ECOCASH_NUMBER = "REPLACE-WITH-YOUR-ECOCASH-NUMBER";
+// The EcoCash number clients pay job budgets into (shown on every
+// awaiting-payment job in the client's "My jobs" view).
+const PLATFORM_ECOCASH_NUMBER = "0773141598";
 
 // Formats a local Zimbabwean number (e.g. "0771234567") into the digits-only
 // international form wa.me needs (e.g. "263771234567"). Passes through
