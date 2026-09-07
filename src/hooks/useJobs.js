@@ -11,11 +11,12 @@ export function useJobs(enabled) {
 
   const refresh = useCallback(async () => {
     if (!supabaseConfigured) return;
-    // worker_profile embed is needed so the admin payout queue can show
-    // where to actually send the money (see PayoutRow in App.jsx).
+    // worker_profile/client_profile embeds are needed so the admin payout
+    // queue can show where to send money, and so client/worker can see each
+    // other's phone number once a job is claimed (see App.jsx).
     const { data, error: fetchError } = await supabase
       .from("jobs")
-      .select("*, worker_profile:profiles!worker_id(ecocash_number)")
+      .select("*, worker_profile:profiles!worker_id(ecocash_number, phone), client_profile:profiles!client_id(phone)")
       .order("created_at", { ascending: false });
     if (fetchError) {
       setError(fetchError.message);

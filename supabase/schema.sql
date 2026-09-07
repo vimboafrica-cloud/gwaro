@@ -19,6 +19,10 @@ create table if not exists public.profiles (
   -- Where a worker's payout gets sent, and (for now) who an admin sends a
   -- client's collected funds from. See supabase/migrations/0002_payouts.sql.
   ecocash_number text,
+  -- Shown to the other party once a job is claimed, so they can actually
+  -- exchange the work (files, revisions, etc.) via WhatsApp — there's no
+  -- in-app chat/file-sharing yet. See supabase/migrations/0003_contact_phone.sql.
+  phone text,
   created_at timestamptz not null default now()
 );
 

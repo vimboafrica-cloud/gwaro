@@ -92,13 +92,13 @@ export function useAuth() {
     return true;
   }
 
-  async function createProfile({ name, role }) {
+  async function createProfile({ name, role, phone }) {
     if (!session) return false;
     setError("");
     setBusy(true);
     const { data, error: insertError } = await supabase
       .from("profiles")
-      .insert({ id: session.user.id, name, role })
+      .insert({ id: session.user.id, name, role, phone })
       .select()
       .single();
     setBusy(false);
@@ -123,6 +123,22 @@ export function useAuth() {
       setProfile(previous);
       setError(updateError.message);
     }
+  }
+
+  async function updatePhone(phone) {
+    if (!profile) return false;
+    const previous = profile;
+    setProfile({ ...profile, phone }); // optimistic
+    const { error: updateError } = await supabase
+      .from("profiles")
+      .update({ phone })
+      .eq("id", profile.id);
+    if (updateError) {
+      setProfile(previous);
+      setError(updateError.message);
+      return false;
+    }
+    return true;
   }
 
   async function updateEcoCashNumber(ecocashNumber) {
@@ -156,6 +172,7 @@ export function useAuth() {
     sendLink,
     createProfile,
     switchRole,
+    updatePhone,
     updateEcoCashNumber,
     signOut,
   };

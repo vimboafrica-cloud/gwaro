@@ -32,6 +32,37 @@ const CATEGORY_META = {
 };
 const CATEGORIES = Object.keys(CATEGORY_META);
 
+// Formats a local Zimbabwean number (e.g. "0771234567") into the digits-only
+// international form wa.me needs (e.g. "263771234567"). Passes through
+// numbers that already look international.
+function toWhatsAppDigits(phone) {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.startsWith("0")) return "263" + digits.slice(1);
+  if (digits.startsWith("263")) return digits;
+  return digits;
+}
+
+function ContactLink({ label, name, phone }) {
+  if (!phone) {
+    return (
+      <span className="text-xs" style={{ color: COLORS.inkMuted }}>
+        {label}: {name} (no phone on file yet)
+      </span>
+    );
+  }
+  return (
+    <a
+      href={`https://wa.me/${toWhatsAppDigits(phone)}`}
+      target="_blank"
+      rel="noreferrer"
+      className="text-xs underline flex items-center gap-1"
+      style={{ color: COLORS.teal }}
+    >
+      <Smartphone size={11} /> {label}: {name} · {phone} (WhatsApp)
+    </a>
+  );
+}
+
 function payoutBreakdown(budget) {
   const commission = budget * 0.15;
   const transferCost = budget * 0.03;
@@ -222,8 +253,9 @@ export default function Gwaro() {
   const jobsApi = useJobs(jobsEnabled);
 
   const [emailInput, setEmailInput] = useState("");
-  const [profileForm, setProfileForm] = useState({ name: "", role: "client" });
+  const [profileForm, setProfileForm] = useState({ name: "", role: "client", phone: "" });
   const [ecocashInput, setEcocashInput] = useState("");
+  const [phoneInput, setPhoneInput] = useState("");
 
   const [tab, setTab] = useState("browse");
   const [viewMode, setViewMode] = useState("app"); // "app" | "admin"
@@ -341,7 +373,12 @@ export default function Gwaro() {
         <p className="text-sm mb-5" style={{ color: COLORS.inkMuted }}>
           Almost there — what should we call you?
         </p>
-        <form onSubmit={(e) => { e.preventDefault(); const trimmed = profileForm.name.trim(); if (trimmed) auth.createProfile({ name: trimmed, role: profileForm.role }); }}>
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          const trimmed = profileForm.name.trim();
+          const trimmedPhone = profileForm.phone.trim();
+          if (trimmed && trimmedPhone) auth.createProfile({ name: trimmed, role: profileForm.role, phone: trimmedPhone });
+        }}>
           <label className="block mb-4">
             <span className="block text-xs mb-1" style={{ color: COLORS.inkMuted }}>Your name</span>
             <input
@@ -352,6 +389,20 @@ export default function Gwaro() {
               className="w-full px-3 py-2 text-sm rounded-sm"
               style={{ background: "white", border: `1px solid ${COLORS.line}` }}
             />
+          </label>
+          <label className="block mb-4">
+            <span className="block text-xs mb-1" style={{ color: COLORS.inkMuted }}>Phone number</span>
+            <input
+              type="tel"
+              value={profileForm.phone}
+              onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+              placeholder="e.g. 0771234567"
+              className="w-full px-3 py-2 text-sm rounded-sm"
+              style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+            />
+            <span className="block text-xs mt-1" style={{ color: COLORS.inkMuted }}>
+              Shared with the other person only once a job is claimed, so you can coordinate on WhatsApp.
+            </span>
           </label>
           <label className="block mb-5">
             <span className="block text-xs mb-1" style={{ color: COLORS.inkMuted }}>I'm here to</span>
@@ -379,9 +430,9 @@ export default function Gwaro() {
           {auth.error && <p className="text-xs mb-3" style={{ color: COLORS.rust }}>{auth.error}</p>}
           <button
             type="submit"
-            disabled={auth.busy || !profileForm.name.trim()}
+            disabled={auth.busy || !profileForm.name.trim() || !profileForm.phone.trim()}
             className="w-full text-sm font-medium px-4 py-2 rounded-sm"
-            style={{ background: COLORS.ochre, color: "white", opacity: profileForm.name.trim() ? 1 : 0.6 }}
+            style={{ background: COLORS.ochre, color: "white", opacity: profileForm.name.trim() && profileForm.phone.trim() ? 1 : 0.6 }}
           >
             Continue
           </button>
@@ -605,6 +656,33 @@ export default function Gwaro() {
           ))}
         </div>
 
+        {!profile.phone && (
+          <form
+            onSubmit={(e) => { e.preventDefault(); if (phoneInput.trim()) { auth.updatePhone(phoneInput.trim()); setPhoneInput(""); } }}
+            className="flex items-center gap-2 mb-3 p-3 rounded-sm flex-wrap"
+            style={{ background: COLORS.tealSoft, border: `1px solid ${COLORS.line}` }}
+          >
+            <Smartphone size={14} style={{ color: COLORS.teal }} className="shrink-0" />
+            <span className="text-xs" style={{ color: COLORS.ink }}>
+              Add your phone number so whoever you work with can reach you on WhatsApp.
+            </span>
+            <input
+              value={phoneInput}
+              onChange={(e) => setPhoneInput(e.target.value)}
+              placeholder="e.g. 0771234567"
+              className="text-sm px-2 py-1 rounded-sm flex-1 min-w-[140px]"
+              style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+            />
+            <button
+              type="submit"
+              className="text-xs font-medium px-3 py-1.5 rounded-sm"
+              style={{ background: COLORS.teal, color: COLORS.paper }}
+            >
+              Save
+            </button>
+          </form>
+        )}
+
         {role === "worker" && !profile.ecocash_number && (
           <form
             onSubmit={(e) => { e.preventDefault(); if (ecocashInput.trim()) { auth.updateEcoCashNumber(ecocashInput.trim()); setEcocashInput(""); } }}
@@ -744,6 +822,13 @@ export default function Gwaro() {
               return (
                 <JobCard key={job.id} job={job}>
                   <div className="flex flex-col items-end gap-2">
+                    {job.worker_id && job.status !== "cancelled" && (
+                      role === "client" ? (
+                        <ContactLink label="Worker" name={job.worker_name} phone={job.worker_profile?.phone} />
+                      ) : (
+                        <ContactLink label="Client" name={job.client_name} phone={job.client_profile?.phone} />
+                      )
+                    )}
                     {role === "worker" && job.status === "in_progress" && !job.flagged && (
                       <div className="flex items-center gap-3">
                         <button

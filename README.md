@@ -45,6 +45,21 @@ where id = (select id from auth.users where email = 'you@example.com');
 
 Reload the app and an "Admin" link appears at the bottom.
 
+## Getting client and worker in touch
+
+There's no in-app chat or file upload yet, so once a job is claimed, each
+side sees the other's phone number as a WhatsApp link (`Contact: Name ·
+number`) — they coordinate the actual file transfer and any back-and-forth
+over WhatsApp, which is already how this kind of work happens in Zimbabwe.
+Phone number is collected at onboarding (existing accounts get a one-time
+banner prompting for it). See
+[supabase/migrations/0003_contact_phone.sql](supabase/migrations/0003_contact_phone.sql)
+if you set up the database before this existed.
+
+A real in-app chat + file-sharing system (Supabase Storage, a per-job
+message thread) is a natural upgrade once it's clear people want to stay
+on-platform for it rather than jump to WhatsApp anyway.
+
 ## Payouts: manual for now, on purpose
 
 There's no automatic EcoCash/OneMoney API call yet — getting one requires
