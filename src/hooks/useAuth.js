@@ -92,13 +92,19 @@ export function useAuth() {
     return true;
   }
 
-  async function createProfile({ name, role, phone }) {
+  async function createProfile({ name, role, phone, agreedToTerms }) {
     if (!session) return false;
     setError("");
     setBusy(true);
     const { data, error: insertError } = await supabase
       .from("profiles")
-      .insert({ id: session.user.id, name, role, phone })
+      .insert({
+        id: session.user.id,
+        name,
+        role,
+        phone,
+        agreed_to_terms_at: agreedToTerms ? new Date().toISOString() : null,
+      })
       .select()
       .single();
     setBusy(false);
@@ -123,6 +129,23 @@ export function useAuth() {
       setProfile(previous);
       setError(updateError.message);
     }
+  }
+
+  async function acceptTerms() {
+    if (!profile) return false;
+    const previous = profile;
+    const agreedAt = new Date().toISOString();
+    setProfile({ ...profile, agreed_to_terms_at: agreedAt }); // optimistic
+    const { error: updateError } = await supabase
+      .from("profiles")
+      .update({ agreed_to_terms_at: agreedAt })
+      .eq("id", profile.id);
+    if (updateError) {
+      setProfile(previous);
+      setError(updateError.message);
+      return false;
+    }
+    return true;
   }
 
   async function updatePhone(phone) {
@@ -157,6 +180,22 @@ export function useAuth() {
     return true;
   }
 
+  // Admin-only: suspending someone else's account. Enforced by the
+  // enforce_profile_admin_fields trigger — this call fails silently (via
+  // updateError) for anyone who isn't actually an admin, regardless of
+  // what the client sends.
+  async function suspendUser(userId, reason) {
+    const { error: updateError } = await supabase
+      .from("profiles")
+      .update({ suspended: true, suspension_reason: reason || null })
+      .eq("id", userId);
+    if (updateError) {
+      setError(updateError.message);
+      return false;
+    }
+    return true;
+  }
+
   async function signOut() {
     await supabase.auth.signOut();
     setPendingEmail("");
@@ -172,8 +211,10 @@ export function useAuth() {
     sendLink,
     createProfile,
     switchRole,
+    acceptTerms,
     updatePhone,
     updateEcoCashNumber,
+    suspendUser,
     signOut,
   };
 }

@@ -83,6 +83,37 @@ Mitigating it further (in-app masked messaging, non-circumvention terms,
 loyalty/reputation incentives to stay on-platform) is worth revisiting once
 there's real usage to observe.
 
+## Platform rules and enforcement
+
+New sign-ups must read and check a box agreeing to plain-language platform
+rules (pay through Gwaro, don't take a Gwaro match off-platform to dodge
+fees, be honest in disputes) before their account is created; existing
+accounts get the same rules as a one-time gate on next sign-in. This is
+**not a lawyer-drafted legal document** — get one reviewed before treating
+it as actually enforceable.
+
+The teeth behind it: an admin can suspend an account (currently wired up as
+a "Suspend client"/"Suspend worker" button right on each disputed job in
+**Admin → Reported jobs**; for anything not tied to a specific dispute, see
+the SQL snippet in
+[supabase/migrations/0005_trust_and_safety.sql](supabase/migrations/0005_trust_and_safety.sql)).
+A suspended account sees a blocking screen instead of the app.
+
+**Security fix bundled into the same migration**: the profiles table
+previously let any signed-in user update *any* column on their own row via
+the API — including `is_admin`. In other words, anyone could have called
+`supabase.from('profiles').update({is_admin: true})` directly and granted
+themselves admin. A trigger now blocks changes to `is_admin`/`suspended`/
+`suspension_reason` from anyone who isn't already an admin.
+
+**What this doesn't solve**: a rule with a penalty is a deterrent, not a
+technical block — two people who've already met through Gwaro can still
+just talk on WhatsApp and skip the app for their next job together, and
+there's no way to detect that from here. The honest fix for that is making
+staying on-platform worth more than leaving (the protection banner shown in
+the app, and eventually things like visible reputation/repeat business),
+not just banning people after the fact.
+
 ## Getting client and worker in touch
 
 There's no in-app chat or file upload yet, so once a job is claimed, each

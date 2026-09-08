@@ -36,6 +36,44 @@ const CATEGORIES = Object.keys(CATEGORY_META);
 // awaiting-payment job in the client's "My jobs" view).
 const PLATFORM_ECOCASH_NUMBER = "0773141598";
 
+// Plain-language platform rules, not a lawyer-drafted legal document — get
+// this reviewed by one before treating it as enforceable in a real launch.
+const PLATFORM_RULES = [
+  {
+    title: "Pay and get paid through Gwaro",
+    body: "Job payments go through Gwaro's tracked flow — the client pays into the platform, the platform pays the worker out. Arranging payment outside the app for a job that started on Gwaro isn't allowed.",
+  },
+  {
+    title: "Don't take a Gwaro match off-platform to dodge fees",
+    body: "If you met someone through Gwaro, future jobs with them should also go through Gwaro. Repeatedly moving matched work off-platform after meeting through Gwaro can get an account suspended.",
+  },
+  {
+    title: "Be honest in disputes",
+    body: "False reports, false payment claims, or false delivery claims can result in suspension.",
+  },
+  {
+    title: "Contact info is shared responsibly",
+    body: "Your phone number is only shown to the other person once a job is paid for and claimed — it isn't shown before that.",
+  },
+  {
+    title: "Disputes are reviewed at Gwaro's discretion",
+    body: "Gwaro isn't liable for the quality of work exchanged between a client and worker; reported jobs are resolved based on whatever evidence is available.",
+  },
+];
+
+function PlatformRules() {
+  return (
+    <div className="space-y-3">
+      {PLATFORM_RULES.map((rule) => (
+        <div key={rule.title}>
+          <div className="text-xs font-semibold" style={{ color: COLORS.ink }}>{rule.title}</div>
+          <div className="text-xs" style={{ color: COLORS.inkMuted }}>{rule.body}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Formats a local Zimbabwean number (e.g. "0771234567") into the digits-only
 // international form wa.me needs (e.g. "263771234567"). Passes through
 // numbers that already look international.
@@ -289,7 +327,8 @@ export default function Gwaro() {
   const jobsApi = useJobs(jobsEnabled);
 
   const [emailInput, setEmailInput] = useState("");
-  const [profileForm, setProfileForm] = useState({ name: "", role: "client", phone: "" });
+  const [profileForm, setProfileForm] = useState({ name: "", role: "client", phone: "", agreedTerms: false });
+  const [rulesExpanded, setRulesExpanded] = useState(false);
   const [ecocashInput, setEcocashInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
 
@@ -413,7 +452,9 @@ export default function Gwaro() {
           e.preventDefault();
           const trimmed = profileForm.name.trim();
           const trimmedPhone = profileForm.phone.trim();
-          if (trimmed && trimmedPhone) auth.createProfile({ name: trimmed, role: profileForm.role, phone: trimmedPhone });
+          if (trimmed && trimmedPhone && profileForm.agreedTerms) {
+            auth.createProfile({ name: trimmed, role: profileForm.role, phone: trimmedPhone, agreedToTerms: true });
+          }
         }}>
           <label className="block mb-4">
             <span className="block text-xs mb-1" style={{ color: COLORS.inkMuted }}>Your name</span>
@@ -463,12 +504,40 @@ export default function Gwaro() {
               ))}
             </div>
           </label>
+          <div className="mb-5">
+            <button
+              type="button"
+              onClick={() => setRulesExpanded(!rulesExpanded)}
+              className="text-xs underline mb-2"
+              style={{ color: COLORS.teal }}
+            >
+              {rulesExpanded ? "Hide" : "View"} platform rules
+            </button>
+            {rulesExpanded && (
+              <div className="p-3 mb-2 rounded-sm" style={{ background: COLORS.paperDark }}>
+                <PlatformRules />
+              </div>
+            )}
+            <label className="flex items-start gap-2 text-xs" style={{ color: COLORS.ink }}>
+              <input
+                type="checkbox"
+                checked={profileForm.agreedTerms}
+                onChange={(e) => setProfileForm({ ...profileForm, agreedTerms: e.target.checked })}
+                className="mt-0.5"
+              />
+              I've read and agree to the platform rules, including not taking jobs off-platform to avoid fees.
+            </label>
+          </div>
           {auth.error && <p className="text-xs mb-3" style={{ color: COLORS.rust }}>{auth.error}</p>}
           <button
             type="submit"
-            disabled={auth.busy || !profileForm.name.trim() || !profileForm.phone.trim()}
+            disabled={auth.busy || !profileForm.name.trim() || !profileForm.phone.trim() || !profileForm.agreedTerms}
             className="w-full text-sm font-medium px-4 py-2 rounded-sm"
-            style={{ background: COLORS.ochre, color: "white", opacity: profileForm.name.trim() && profileForm.phone.trim() ? 1 : 0.6 }}
+            style={{
+              background: COLORS.ochre,
+              color: "white",
+              opacity: profileForm.name.trim() && profileForm.phone.trim() && profileForm.agreedTerms ? 1 : 0.6,
+            }}
           >
             Continue
           </button>
@@ -482,6 +551,47 @@ export default function Gwaro() {
 
   // ---------------- from here: auth.authStage === "ready" ----------------
   const { profile } = auth;
+
+  if (profile.suspended) {
+    return (
+      <CenteredCard>
+        <Logo />
+        <p className="text-sm mb-3" style={{ color: COLORS.rust }}>
+          Your account has been suspended.
+        </p>
+        {profile.suspension_reason && (
+          <p className="text-sm mb-4" style={{ color: COLORS.inkMuted }}>{profile.suspension_reason}</p>
+        )}
+        <button onClick={auth.signOut} className="text-sm underline" style={{ color: COLORS.inkMuted }}>
+          Sign out
+        </button>
+      </CenteredCard>
+    );
+  }
+
+  if (!profile.agreed_to_terms_at) {
+    return (
+      <CenteredCard>
+        <Logo />
+        <p className="text-sm mb-4" style={{ color: COLORS.inkMuted }}>
+          The platform rules have been updated — please review and accept them to continue.
+        </p>
+        <div className="p-3 mb-4 rounded-sm" style={{ background: COLORS.paperDark }}>
+          <PlatformRules />
+        </div>
+        {auth.error && <p className="text-xs mb-3" style={{ color: COLORS.rust }}>{auth.error}</p>}
+        <button
+          onClick={auth.acceptTerms}
+          disabled={auth.busy}
+          className="w-full text-sm font-medium px-4 py-2 rounded-sm"
+          style={{ background: COLORS.ochre, color: "white" }}
+        >
+          I agree — continue
+        </button>
+      </CenteredCard>
+    );
+  }
+
   const role = profile.role;
   const jobs = jobsApi.jobs;
   const flaggedJobs = jobs.filter((j) => j.flagged);
@@ -522,6 +632,10 @@ export default function Gwaro() {
     if (action === "release") updateJob(id, { flagged: false, status: "approved", payout_status: "pending" });
     if (action === "refund") updateJob(id, { flagged: false, status: "cancelled" });
     if (action === "dismiss") updateJob(id, { flagged: false });
+  }
+
+  function suspendFromDispute(userId, jobId) {
+    auth.suspendUser(userId, `Suspended from reviewing job ${jobId}'s dispute.`);
   }
 
   function markPayoutSent(id, reference) {
@@ -598,6 +712,22 @@ export default function Gwaro() {
                     >
                       Dismiss report
                     </button>
+                    <div className="flex items-center gap-3 mt-1 pt-1 w-48 justify-center" style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                      <button
+                        onClick={() => suspendFromDispute(job.client_id, job.id)}
+                        className="text-xs underline"
+                        style={{ color: COLORS.rust }}
+                      >
+                        Suspend client
+                      </button>
+                      <button
+                        onClick={() => suspendFromDispute(job.worker_id, job.id)}
+                        className="text-xs underline"
+                        style={{ color: COLORS.rust }}
+                      >
+                        Suspend worker
+                      </button>
+                    </div>
                   </div>
                 </JobCard>
               ))}
@@ -662,7 +792,7 @@ export default function Gwaro() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between mb-5 flex-wrap gap-1">
+        <div className="flex items-center justify-between mb-1 flex-wrap gap-1">
           <p className="text-sm" style={{ color: COLORS.inkMuted }}>
             Typing and writing jobs, matched locally.
           </p>
@@ -678,6 +808,9 @@ export default function Gwaro() {
             )}
           </p>
         </div>
+        <p className="text-xs mb-5" style={{ color: COLORS.inkMuted }}>
+          Payments are held until approved and disputes are reviewed here — that protection goes away for anything arranged outside Gwaro.
+        </p>
 
         {/* role switch */}
         <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
