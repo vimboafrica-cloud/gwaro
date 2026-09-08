@@ -385,6 +385,19 @@ alter publication supabase_realtime add table public.bids;
 update public.profiles set worker_approved = true
 where role = 'worker' or id in (select worker_id from public.jobs where worker_id is not null);
 
+-- ---------- public job listings (for advertising, e.g. a scheduled agent) ----------
+-- jobs itself requires an authenticated session — correct, since it also
+-- holds client/worker identity and payment fields. This view exposes only
+-- what's already meant to be public once a job is open for workers to see,
+-- granted to anon so an unattended script can read it with just the public
+-- anon key. See supabase/migrations/0008_public_job_listings.sql.
+create or replace view public.public_job_listings as
+select id, category, title, description, budget, deadline, status, bidding_enabled, created_at
+from public.jobs
+where status in ('open', 'bidding');
+
+grant select on public.public_job_listings to anon;
+
 -- ---------- make yourself an admin ----------
 -- After you've signed in once (so a profiles row exists for your email),
 -- run this to unlock the admin dispute/payout views:
