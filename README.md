@@ -114,6 +114,47 @@ staying on-platform worth more than leaving (the protection banner shown in
 the app, and eventually things like visible reputation/repeat business),
 not just banning people after the fact.
 
+## Revenue reporting (Admin)
+
+**Admin → Revenue** summarizes actual platform earnings, distinct from the
+money that just passes through: the 15% commission is real revenue, the 3%
+mobile-money transfer cost is a pass-through covering the real EcoCash fee,
+not profit. Shows totals, a breakdown by category and by month, and an
+**Export CSV** button (job-by-job detail: date, category, client, worker,
+budget, commission, transfer cost, worker payout, payout reference) for
+bookkeeping/tax filing. Computed entirely from data already loaded — no
+database change needed.
+
+Revenue is dated by `collection_confirmed_at` (when the client's payment
+was actually confirmed) rather than when the job was posted, since that's
+when the money genuinely arrived; falls back to `created_at` for jobs from
+before that field existed.
+
+This matters more than it might look: if you incorporate (see the OPC/Pvt
+Ltd note below), keeping business revenue cleanly separated and exportable
+is part of what actually makes the corporate structure hold up, not just
+the registration paperwork.
+
+## One-person company note
+
+Zimbabwe doesn't have a distinctly-named "OPC" category, but a standard
+**Private Company Limited by Shares** under the Companies and Other
+Business Entities Act, 2019 can legally be formed with a single
+shareholder who is also the sole director — functionally the same thing.
+Not legal advice; get the actual registration reviewed by a lawyer/
+accountant. If you do incorporate, two things in the app should change to
+actually realize the liability-shield benefit (right now they undermine
+it):
+
+1. **`PLATFORM_ECOCASH_NUMBER`** (in `src/App.jsx`) is currently a personal
+   number — client payments should go to a business EcoCash/bank account
+   in the company's name instead, or a court/ZIMRA could disregard the
+   corporate veil on the grounds that business and personal funds were
+   never actually separated.
+2. **Platform Rules** (`PLATFORM_RULES` in `src/App.jsx`) should name the
+   actual legal entity once registered, so the rules are the company's
+   terms, not one person's informal ones.
+
 ## Competitive bidding (optional, per job)
 
 Alongside the original fixed-price/first-claim flow, a client can post a

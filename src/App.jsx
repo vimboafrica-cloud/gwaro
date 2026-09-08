@@ -173,6 +173,64 @@ function payoutBreakdown(budget) {
   return { commission, transferCost, net };
 }
 
+// The platform's actual earnings for accounting/tax purposes: the 15%
+// commission is real revenue; the 3% transfer cost is a pass-through
+// (roughly covers the real EcoCash transaction fee), not profit — kept
+// separate here rather than lumped together. Revenue is dated by when the
+// client's payment was actually confirmed (collection_confirmed_at), since
+// that's when the money genuinely arrived — falling back to created_at for
+// older jobs from before that field existed.
+function computeRevenueSummary(jobs) {
+  const completed = jobs.filter((j) => j.status === "approved");
+  let grossTotal = 0;
+  let commissionTotal = 0;
+  let transferCostTotal = 0;
+  const byCategory = {};
+  const byMonth = {};
+
+  completed.forEach((j) => {
+    const budget = Number(j.budget);
+    const { commission, transferCost } = payoutBreakdown(budget);
+    grossTotal += budget;
+    commissionTotal += commission;
+    transferCostTotal += transferCost;
+    byCategory[j.category] = (byCategory[j.category] || 0) + commission;
+    const dateBasis = j.collection_confirmed_at || j.created_at || "";
+    const month = dateBasis.slice(0, 7) || "Unknown";
+    byMonth[month] = (byMonth[month] || 0) + commission;
+  });
+
+  return { completed, grossTotal, commissionTotal, transferCostTotal, byCategory, byMonth };
+}
+
+function downloadRevenueCsv(completedJobs) {
+  const header = [
+    "Job ID", "Date", "Category", "Client", "Worker",
+    "Budget", "Platform commission (15%)", "Transfer cost (3%)", "Worker payout", "Payout reference",
+  ];
+  const rows = completedJobs.map((j) => {
+    const budget = Number(j.budget);
+    const { commission, transferCost, net } = payoutBreakdown(budget);
+    const date = (j.collection_confirmed_at || j.created_at || "").slice(0, 10);
+    return [
+      j.id, date, j.category, j.client_name, j.worker_name || "",
+      budget.toFixed(2), commission.toFixed(2), transferCost.toFixed(2), net.toFixed(2), j.payout_reference || "",
+    ];
+  });
+  const csv = [header, ...rows]
+    .map((row) => row.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `gwaro-revenue-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function StatusBadge({ status, flagged }) {
   if (flagged) {
     return (
@@ -918,6 +976,7 @@ export default function Gwaro() {
   const flaggedJobs = jobs.filter((j) => j.flagged);
   const pendingPayouts = jobs.filter((j) => j.payout_status === "pending");
   const awaitingPayment = jobs.filter((j) => j.status === "awaiting_payment");
+  const revenue = computeRevenueSummary(jobs);
 
   function confirmPaymentReceived(id, reference) {
     // A bidding-derived job already has a worker assigned (from the
@@ -1100,6 +1159,67 @@ export default function Gwaro() {
                 <PayoutRow key={job.id} job={job} onMarkSent={markPayoutSent} />
               ))}
             </div>
+          </section>
+
+          <section>
+            <h2 className="text-sm font-semibold mb-3">Revenue</h2>
+            {revenue.completed.length === 0 ? (
+              <EmptyState text="Completed jobs will show up here as platform revenue." />
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div className="p-3 rounded-sm" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                    <div className="text-xs" style={{ color: COLORS.inkMuted }}>Completed jobs</div>
+                    <div className="text-lg font-semibold">{revenue.completed.length}</div>
+                  </div>
+                  <div className="p-3 rounded-sm" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                    <div className="text-xs" style={{ color: COLORS.inkMuted }}>Gross job value</div>
+                    <div className="text-lg font-semibold">${revenue.grossTotal.toFixed(2)}</div>
+                  </div>
+                  <div className="p-3 rounded-sm" style={{ background: COLORS.sageSoft }}>
+                    <div className="text-xs" style={{ color: COLORS.inkMuted }}>Platform revenue (15%)</div>
+                    <div className="text-lg font-semibold" style={{ color: COLORS.sage }}>${revenue.commissionTotal.toFixed(2)}</div>
+                  </div>
+                  <div className="p-3 rounded-sm" style={{ background: COLORS.paperDark }}>
+                    <div className="text-xs" style={{ color: COLORS.inkMuted }}>Transfer costs (3%, pass-through)</div>
+                    <div className="text-lg font-semibold" style={{ color: COLORS.inkMuted }}>${revenue.transferCostTotal.toFixed(2)}</div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <div className="text-xs font-medium mb-1.5" style={{ color: COLORS.inkMuted }}>Revenue by category</div>
+                    <div className="space-y-1">
+                      {Object.entries(revenue.byCategory).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
+                        <div key={cat} className="text-xs flex justify-between">
+                          <span>{cat}</span>
+                          <span className="font-medium">${amt.toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium mb-1.5" style={{ color: COLORS.inkMuted }}>Revenue by month</div>
+                    <div className="space-y-1">
+                      {Object.entries(revenue.byMonth).sort((a, b) => a[0].localeCompare(b[0])).map(([month, amt]) => (
+                        <div key={month} className="text-xs flex justify-between">
+                          <span>{month}</span>
+                          <span className="font-medium">${amt.toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => downloadRevenueCsv(revenue.completed)}
+                  className="text-sm font-medium px-3 py-1.5 rounded-sm"
+                  style={{ background: COLORS.teal, color: COLORS.paper }}
+                >
+                  Export CSV
+                </button>
+              </>
+            )}
           </section>
         </div>
       </div>
