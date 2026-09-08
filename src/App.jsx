@@ -3,7 +3,7 @@ import {
   Wallet, FileText, PenLine, Mic, Briefcase, Clock, CheckCircle2,
   Flag, Star, Inbox, PlusCircle, ArrowRight, Loader2, AlertTriangle, Mail, Smartphone,
   Building2, PencilRuler, Database, SpellCheck, Languages, Palette, Presentation,
-  Calculator, Headphones, Captions, Clapperboard, Scale
+  Calculator, Headphones, Captions, Clapperboard, Scale, GraduationCap
 } from "lucide-react";
 import { supabaseConfigured } from "./lib/supabaseClient";
 import { useAuth } from "./hooks/useAuth";
@@ -47,6 +47,11 @@ const CATEGORY_META = {
     icon: Scale,
     disclaimer:
       "Formatting/typing help only — not legal advice. Gwaro doesn't vouch for legal correctness; for real legal matters, consult a licensed lawyer.",
+  },
+  "Tutoring & worked explanations": {
+    icon: GraduationCap,
+    disclaimer:
+      "Written or recorded explanations of concepts and worked solutions only — not live sessions, and not for completing graded assignments, tests, or exams on a student's behalf.",
   },
 };
 const CATEGORIES = Object.keys(CATEGORY_META);
