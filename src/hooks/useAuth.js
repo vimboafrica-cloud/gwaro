@@ -148,6 +148,23 @@ export function useAuth() {
     return true;
   }
 
+  async function submitWorkerSample(sample) {
+    if (!profile) return false;
+    const previous = profile;
+    const submittedAt = new Date().toISOString();
+    setProfile({ ...profile, worker_sample: sample, worker_sample_submitted_at: submittedAt });
+    const { error: updateError } = await supabase
+      .from("profiles")
+      .update({ worker_sample: sample, worker_sample_submitted_at: submittedAt })
+      .eq("id", profile.id);
+    if (updateError) {
+      setProfile(previous);
+      setError(updateError.message);
+      return false;
+    }
+    return true;
+  }
+
   async function updatePhone(phone) {
     if (!profile) return false;
     const previous = profile;
@@ -213,6 +230,7 @@ export function useAuth() {
     switchRole,
     acceptTerms,
     updatePhone,
+    submitWorkerSample,
     updateEcoCashNumber,
     suspendUser,
     signOut,

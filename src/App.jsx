@@ -6,6 +6,7 @@ import {
 import { supabaseConfigured } from "./lib/supabaseClient";
 import { useAuth } from "./hooks/useAuth";
 import { useJobs } from "./hooks/useJobs";
+import { useAdminPendingWorkers } from "./hooks/useAdminPendingWorkers";
 
 // ---- design tokens ----
 const COLORS = {
@@ -35,6 +36,22 @@ const CATEGORIES = Object.keys(CATEGORY_META);
 // The EcoCash number clients pay job budgets into (shown on every
 // awaiting-payment job in the client's "My jobs" view).
 const PLATFORM_ECOCASH_NUMBER = "0773141598";
+
+// Must match the same-named constants in the enforce_worker_claim_eligibility
+// trigger (supabase/migrations/0006_quality_assurance.sql) — these are only
+// used here to explain/preview the limit in the UI; the trigger is what
+// actually enforces it.
+const PROBATION_JOB_THRESHOLD = 3;
+const PROBATION_BUDGET_CAP = 15;
+
+// A worker's visible track record: completed job count + average rating,
+// computed from jobs already loaded (no extra query needed).
+function workerReputation(jobs, workerId) {
+  const completed = jobs.filter((j) => j.worker_id === workerId && j.status === "approved");
+  const rated = completed.filter((j) => j.rating != null);
+  const avg = rated.length ? rated.reduce((sum, j) => sum + j.rating, 0) / rated.length : null;
+  return { completedCount: completed.length, avg, ratedCount: rated.length };
+}
 
 // Plain-language platform rules, not a lawyer-drafted legal document — get
 // this reviewed by one before treating it as enforceable in a real launch.
@@ -84,11 +101,27 @@ function toWhatsAppDigits(phone) {
   return digits;
 }
 
-function ContactLink({ label, name, phone }) {
+function ReputationBadge({ reputation }) {
+  if (!reputation || reputation.completedCount === 0) {
+    return <span style={{ color: COLORS.inkMuted }}> · new worker</span>;
+  }
+  const jobsLabel = `${reputation.completedCount} job${reputation.completedCount > 1 ? "s" : ""}`;
+  if (!reputation.avg) {
+    return <span style={{ color: COLORS.inkMuted }}> · {jobsLabel}, not yet rated</span>;
+  }
+  return (
+    <span style={{ color: COLORS.inkMuted }}>
+      {" "}· <Star size={10} fill={COLORS.ochre} color={COLORS.ochre} style={{ display: "inline", verticalAlign: -1 }} />{" "}
+      {reputation.avg.toFixed(1)} ({jobsLabel})
+    </span>
+  );
+}
+
+function ContactLink({ label, name, phone, reputation }) {
   if (!phone) {
     return (
       <span className="text-xs" style={{ color: COLORS.inkMuted }}>
-        {label}: {name} (no phone on file yet)
+        {label}: {name} (no phone on file yet)<ReputationBadge reputation={reputation} />
       </span>
     );
   }
@@ -101,6 +134,7 @@ function ContactLink({ label, name, phone }) {
       style={{ color: COLORS.teal }}
     >
       <Smartphone size={11} /> {label}: {name} · {phone} (WhatsApp)
+      {reputation && <ReputationBadge reputation={reputation} />}
     </a>
   );
 }
@@ -236,6 +270,128 @@ function PayoutRow({ job, onMarkSent }) {
   );
 }
 
+function DeliveredReview({ job, commission, transferCost, net, onApprove, onRequestChanges }) {
+  const [requestingChanges, setRequestingChanges] = useState(false);
+  const [note, setNote] = useState("");
+
+  if (requestingChanges) {
+    return (
+      <div className="text-xs rounded-sm px-3 py-2 w-56" style={{ background: COLORS.paperDark }}>
+        <textarea
+          autoFocus
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={3}
+          placeholder="What needs to change?"
+          className="w-full px-2 py-1.5 text-xs rounded-sm mb-2"
+          style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+        />
+        <div className="flex gap-2">
+          <button
+            onClick={() => { onRequestChanges(note); setRequestingChanges(false); setNote(""); }}
+            disabled={!note.trim()}
+            className="flex-1 text-xs font-medium px-2 py-1.5 rounded-sm"
+            style={{ background: COLORS.ochre, color: "white", opacity: note.trim() ? 1 : 0.6 }}
+          >
+            Send back
+          </button>
+          <button
+            onClick={() => setRequestingChanges(false)}
+            className="text-xs px-2"
+            style={{ color: COLORS.inkMuted }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-xs rounded-sm px-3 py-2 w-56" style={{ background: COLORS.paperDark }}>
+      <div className="flex justify-between mb-0.5">
+        <span style={{ color: COLORS.inkMuted }}>Job budget</span>
+        <span>${Number(job.budget).toFixed(2)}</span>
+      </div>
+      <div className="flex justify-between mb-0.5">
+        <span style={{ color: COLORS.inkMuted }}>Platform fee (15%)</span>
+        <span>-${commission.toFixed(2)}</span>
+      </div>
+      <div className="flex justify-between mb-1.5">
+        <span style={{ color: COLORS.inkMuted }}>Mobile money transfer</span>
+        <span>-${transferCost.toFixed(2)}</span>
+      </div>
+      <div className="flex justify-between pt-1.5 font-medium" style={{ borderTop: `1px solid ${COLORS.line}` }}>
+        <span>Worker receives</span>
+        <span>${net.toFixed(2)}</span>
+      </div>
+      <button
+        onClick={onApprove}
+        className="mt-2 w-full text-sm font-medium px-3 py-1.5 rounded-sm"
+        style={{ background: COLORS.ochre, color: "white" }}
+      >
+        Approve &amp; release payment
+      </button>
+      <button
+        onClick={() => setRequestingChanges(true)}
+        className="mt-1.5 w-full text-xs underline"
+        style={{ color: COLORS.inkMuted }}
+      >
+        Request changes instead
+      </button>
+    </div>
+  );
+}
+
+function PendingWorkerRow({ worker, onApprove, onRequestResubmission }) {
+  const [feedback, setFeedback] = useState("");
+  const [showFeedback, setShowFeedback] = useState(false);
+  return (
+    <div className="p-4 rounded-sm" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-semibold">{worker.name}</span>
+        <span className="text-xs" style={{ color: COLORS.inkMuted }}>{worker.phone || "no phone on file"}</span>
+      </div>
+      <p className="text-sm mb-3 whitespace-pre-wrap" style={{ color: COLORS.ink }}>{worker.worker_sample}</p>
+      {!showFeedback ? (
+        <div className="flex gap-3">
+          <button
+            onClick={() => onApprove(worker.id)}
+            className="text-sm font-medium px-3 py-1.5 rounded-sm"
+            style={{ background: COLORS.teal, color: COLORS.paper }}
+          >
+            Approve worker
+          </button>
+          <button
+            onClick={() => setShowFeedback(true)}
+            className="text-xs underline"
+            style={{ color: COLORS.rust }}
+          >
+            Ask for a different sample
+          </button>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <input
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="Why? (shown to the worker)"
+            className="flex-1 px-2 py-1.5 text-xs rounded-sm"
+            style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+          />
+          <button
+            onClick={() => { onRequestResubmission(worker.id, feedback); setShowFeedback(false); setFeedback(""); }}
+            className="text-xs font-medium px-3 py-1.5 rounded-sm"
+            style={{ background: COLORS.rust, color: "white" }}
+          >
+            Send
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CollectionRow({ job, onConfirm }) {
   const [reference, setReference] = useState("");
   return (
@@ -321,6 +477,46 @@ function Logo() {
   );
 }
 
+function WorkerApprovalPanel({ profile, auth }) {
+  const [sample, setSample] = useState("");
+
+  if (profile.worker_sample_submitted_at) {
+    return (
+      <EmptyState text="Your work sample is submitted and waiting on review. We'll approve your account once it's checked — you can still post jobs as a client in the meantime." />
+    );
+  }
+
+  return (
+    <div className="p-4 rounded-sm" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+      <h3 className="text-sm font-semibold mb-1">Before you can claim jobs</h3>
+      <p className="text-sm mb-3" style={{ color: COLORS.inkMuted }}>
+        Share a short sample of your typing, writing, or transcription work — this is what clients are trusting you with.
+      </p>
+      {profile.worker_sample_feedback && (
+        <p className="text-xs mb-3 p-2 rounded-sm" style={{ background: COLORS.ochreSoft, color: COLORS.ink }}>
+          Feedback on your last submission: {profile.worker_sample_feedback}
+        </p>
+      )}
+      <textarea
+        value={sample}
+        onChange={(e) => setSample(e.target.value)}
+        rows={5}
+        placeholder="Paste a writing sample, describe a transcription/typing job you've done, or drop a link to your work…"
+        className="w-full px-3 py-2 text-sm rounded-sm mb-3"
+        style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+      />
+      <button
+        onClick={() => auth.submitWorkerSample(sample.trim())}
+        disabled={sample.trim().length < 20 || auth.busy}
+        className="text-sm font-medium px-4 py-2 rounded-sm"
+        style={{ background: COLORS.ochre, color: "white", opacity: sample.trim().length < 20 ? 0.6 : 1 }}
+      >
+        Submit for review
+      </button>
+    </div>
+  );
+}
+
 export default function Gwaro() {
   const auth = useAuth();
   const jobsEnabled = auth.authStage === "ready";
@@ -334,6 +530,7 @@ export default function Gwaro() {
 
   const [tab, setTab] = useState("browse");
   const [viewMode, setViewMode] = useState("app"); // "app" | "admin"
+  const pendingWorkersApi = useAdminPendingWorkers(viewMode === "admin");
 
   const [form, setForm] = useState({
     category: CATEGORIES[0],
@@ -663,6 +860,28 @@ export default function Gwaro() {
             </button>
           </div>
           <section className="mb-8">
+            <h2 className="text-sm font-semibold mb-3">Worker approvals</h2>
+            <p className="text-sm mb-3" style={{ color: COLORS.inkMuted }}>
+              {pendingWorkersApi.pending.length === 0
+                ? "No worker applications waiting on review."
+                : `${pendingWorkersApi.pending.length} worker${pendingWorkersApi.pending.length > 1 ? "s" : ""} waiting for approval.`}
+            </p>
+            <div className="space-y-3">
+              {pendingWorkersApi.pending.length === 0 && (
+                <EmptyState text="New workers show up here once they submit a work sample." />
+              )}
+              {pendingWorkersApi.pending.map((worker) => (
+                <PendingWorkerRow
+                  key={worker.id}
+                  worker={worker}
+                  onApprove={pendingWorkersApi.approve}
+                  onRequestResubmission={pendingWorkersApi.requestResubmission}
+                />
+              ))}
+            </div>
+          </section>
+
+          <section className="mb-8">
             <h2 className="text-sm font-semibold mb-3">Incoming payments</h2>
             <p className="text-sm mb-3" style={{ color: COLORS.inkMuted }}>
               {awaitingPayment.length === 0
@@ -763,6 +982,14 @@ export default function Gwaro() {
     role === "client" ? j.client_id === profile.id : j.worker_id === profile.id
   );
   const openJobs = jobs.filter((j) => j.status === "open");
+
+  // Mirrors the enforce_worker_claim_eligibility DB trigger — this is only
+  // a UI preview of the limit, not the actual enforcement.
+  const myReputation = role === "worker" ? workerReputation(jobs, profile.id) : null;
+  const onProbation = myReputation ? myReputation.completedCount < PROBATION_JOB_THRESHOLD : false;
+  const myActiveJobCount = jobs.filter(
+    (j) => j.worker_id === profile.id && (j.status === "in_progress" || j.status === "delivered")
+  ).length;
 
   const tabs = [
     { key: "browse", label: "Browse jobs" },
@@ -905,13 +1132,35 @@ export default function Gwaro() {
           </form>
         )}
 
+        {role === "worker" && profile.worker_approved && myReputation && (
+          <p className="text-xs mb-4" style={{ color: COLORS.inkMuted }}>
+            Your track record:<ReputationBadge reputation={myReputation} />
+            {onProbation && ` · new-worker limits apply until ${PROBATION_JOB_THRESHOLD} completed jobs`}
+          </p>
+        )}
+
+        {role === "worker" && !profile.worker_approved ? (
+          <WorkerApprovalPanel profile={profile} auth={auth} />
+        ) : (
+        <>
         {/* BROWSE */}
         {tab === "browse" && (
           <div className="space-y-3">
             {openJobs.length === 0 && <EmptyState text="No open jobs right now. Check back soon." />}
-            {openJobs.map((job) => (
+            {openJobs.map((job) => {
+              const overCap = onProbation && Number(job.budget) > PROBATION_BUDGET_CAP;
+              const overActive = onProbation && myActiveJobCount >= 1;
+              const blockedReason = overActive
+                ? "Finish your current job first"
+                : overCap
+                ? `Over the $${PROBATION_BUDGET_CAP} limit for new workers`
+                : null;
+              return (
               <JobCard key={job.id} job={job}>
                 {role === "worker" ? (
+                  blockedReason ? (
+                    <span className="text-xs" style={{ color: COLORS.inkMuted }}>{blockedReason}</span>
+                  ) : (
                   <button
                     onClick={() => updateJob(job.id, { status: "in_progress", worker_id: profile.id, worker_name: profile.name })}
                     className="text-sm font-medium px-3 py-1.5 rounded-sm flex items-center gap-1"
@@ -919,13 +1168,15 @@ export default function Gwaro() {
                   >
                     Claim job <ArrowRight size={14} />
                   </button>
+                  )
                 ) : (
                   <span className="text-sm" style={{ color: COLORS.inkMuted }}>
                     {job.client_id === profile.id ? "Your job — awaiting a worker" : "Awaiting a worker"}
                   </span>
                 )}
               </JobCard>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -1019,7 +1270,12 @@ export default function Gwaro() {
                   <div className="flex flex-col items-end gap-2">
                     {job.worker_id && job.status !== "cancelled" && (
                       role === "client" ? (
-                        <ContactLink label="Worker" name={job.worker_name} phone={job.worker_profile?.phone} />
+                        <ContactLink
+                          label="Worker"
+                          name={job.worker_name}
+                          phone={job.worker_profile?.phone}
+                          reputation={workerReputation(jobs, job.worker_id)}
+                        />
                       ) : (
                         <ContactLink label="Client" name={job.client_name} phone={job.client_profile?.phone} />
                       )
@@ -1032,6 +1288,15 @@ export default function Gwaro() {
                         <div className="mt-1" style={{ color: COLORS.inkMuted }}>
                           We'll open it up to workers once payment is confirmed.
                         </div>
+                      </div>
+                    )}
+
+                    {role === "worker" && job.status === "in_progress" && job.revision_note && (
+                      <div className="text-xs rounded-sm px-3 py-2 w-56 mb-1" style={{ background: COLORS.ochreSoft, color: COLORS.ink }}>
+                        <span className="font-medium">
+                          Client requested changes{job.revision_count > 1 ? ` (round ${job.revision_count})` : ""}:
+                        </span>{" "}
+                        {job.revision_note}
                       </div>
                     )}
 
@@ -1059,31 +1324,19 @@ export default function Gwaro() {
                     )}
 
                     {role === "client" && job.status === "delivered" && (
-                      <div className="text-xs rounded-sm px-3 py-2 w-56" style={{ background: COLORS.paperDark }}>
-                        <div className="flex justify-between mb-0.5">
-                          <span style={{ color: COLORS.inkMuted }}>Job budget</span>
-                          <span>${Number(job.budget).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between mb-0.5">
-                          <span style={{ color: COLORS.inkMuted }}>Platform fee (15%)</span>
-                          <span>-${commission.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between mb-1.5">
-                          <span style={{ color: COLORS.inkMuted }}>Mobile money transfer</span>
-                          <span>-${transferCost.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between pt-1.5 font-medium" style={{ borderTop: `1px solid ${COLORS.line}` }}>
-                          <span>Worker receives</span>
-                          <span>${net.toFixed(2)}</span>
-                        </div>
-                        <button
-                          onClick={() => updateJob(job.id, { status: "approved", payout_status: "pending" })}
-                          className="mt-2 w-full text-sm font-medium px-3 py-1.5 rounded-sm"
-                          style={{ background: COLORS.ochre, color: "white" }}
-                        >
-                          Approve &amp; release payment
-                        </button>
-                      </div>
+                      <DeliveredReview
+                        job={job}
+                        commission={commission}
+                        transferCost={transferCost}
+                        net={net}
+                        onApprove={() => updateJob(job.id, { status: "approved", payout_status: "pending" })}
+                        onRequestChanges={(note) => updateJob(job.id, {
+                          status: "in_progress",
+                          revision_note: note,
+                          revision_requested_at: new Date().toISOString(),
+                          revision_count: (job.revision_count || 0) + 1,
+                        })}
+                      />
                     )}
 
                     {job.status === "approved" && role === "client" && (
@@ -1127,6 +1380,8 @@ export default function Gwaro() {
               );
             })}
           </div>
+        )}
+        </>
         )}
 
         {profile.is_admin && (

@@ -30,6 +30,12 @@ create table if not exists public.profiles (
   agreed_to_terms_at timestamptz,
   suspended boolean not null default false,
   suspension_reason text,
+  -- Worker approval gate — see supabase/migrations/0006_quality_assurance.sql.
+  -- Irrelevant while role='client'; a worker can't claim jobs until true.
+  worker_approved boolean not null default false,
+  worker_sample text,
+  worker_sample_submitted_at timestamptz,
+  worker_sample_feedback text,
   created_at timestamptz not null default now()
 );
 
@@ -51,7 +57,9 @@ create policy "users can update their own profile"
   using (auth.uid() = id)
   with check (auth.uid() = id);
 
--- helper used by jobs' RLS policy below
+-- helper used by jobs' RLS policy below, and by the profiles policy right
+-- after it (must be defined first — a policy resolves the function it
+-- references at creation time)
 create or replace function public.is_admin()
 returns boolean
 language sql
@@ -60,6 +68,16 @@ stable
 as $$
   select coalesce((select is_admin from public.profiles where id = auth.uid()), false);
 $$;
+
+-- Without this, an admin action on someone ELSE's row (suspending them,
+-- approving their worker application) is silently blocked by RLS before it
+-- even reaches the enforce_profile_admin_fields trigger below — the "own
+-- profile" policy above only ever matches auth.uid() = id.
+drop policy if exists "admins can update any profile" on public.profiles;
+create policy "admins can update any profile"
+  on public.profiles for update
+  using (public.is_admin())
+  with check (public.is_admin());
 
 -- SECURITY: the "users can update their own profile" policy above allows a
 -- user to change ANY column on their own row — without this trigger, any
@@ -80,9 +98,11 @@ begin
   if auth.role() = 'authenticated'
      and (new.is_admin is distinct from old.is_admin
           or new.suspended is distinct from old.suspended
-          or new.suspension_reason is distinct from old.suspension_reason)
+          or new.suspension_reason is distinct from old.suspension_reason
+          or new.worker_approved is distinct from old.worker_approved
+          or new.worker_sample_feedback is distinct from old.worker_sample_feedback)
      and not public.is_admin() then
-    raise exception 'Only an admin can change admin/suspension fields';
+    raise exception 'Only an admin can change admin/suspension/approval fields';
   end if;
   return new;
 end;
@@ -124,6 +144,12 @@ create table if not exists public.jobs (
   -- image of the payout fields above. See 0004_payment_gate.sql.
   collection_reference text,
   collection_confirmed_at timestamptz,
+  -- Client can send delivered work back for changes instead of only
+  -- choosing between approve or full dispute. See
+  -- supabase/migrations/0006_quality_assurance.sql.
+  revision_note text,
+  revision_requested_at timestamptz,
+  revision_count integer not null default 0,
   created_at timestamptz not null default now()
 );
 
@@ -186,10 +212,63 @@ create trigger jobs_enforce_payment_gate
   for each row
   execute function public.enforce_payment_gate();
 
+-- Worker approval + probationary cap: until a worker has 3 completed
+-- (approved) jobs, they can only have one active job at a time and can't
+-- claim a job budgeted over $15. Also blocks claiming at all for an
+-- unapproved worker. Keep probation_budget_cap in sync with
+-- PROBATION_BUDGET_CAP in src/App.jsx.
+create or replace function public.enforce_worker_claim_eligibility()
+returns trigger
+language plpgsql
+security definer
+as $$
+declare
+  probation_budget_cap numeric := 15;
+  probation_job_threshold integer := 3;
+  completed_count integer;
+  active_count integer;
+begin
+  if auth.role() = 'authenticated' and old.worker_id is null and new.worker_id is not null then
+    if not exists (select 1 from public.profiles where id = new.worker_id and worker_approved = true) then
+      raise exception 'Only approved workers can claim jobs';
+    end if;
+
+    select count(*) into completed_count
+      from public.jobs where worker_id = new.worker_id and status = 'approved';
+
+    if completed_count < probation_job_threshold then
+      select count(*) into active_count
+        from public.jobs where worker_id = new.worker_id and status in ('in_progress', 'delivered');
+
+      if active_count >= 1 then
+        raise exception 'New workers can only have one active job at a time until they have completed % jobs', probation_job_threshold;
+      end if;
+
+      if new.budget > probation_budget_cap then
+        raise exception 'New workers can only claim jobs up to $% until they have completed % jobs', probation_budget_cap, probation_job_threshold;
+      end if;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists jobs_enforce_worker_claim_eligibility on public.jobs;
+create trigger jobs_enforce_worker_claim_eligibility
+  before update on public.jobs
+  for each row
+  execute function public.enforce_worker_claim_eligibility();
+
 -- Realtime: lets every open browser see job changes live (claims, delivery,
 -- approval, disputes, payouts) without polling. Enable it either here or via
 -- Dashboard -> Database -> Replication -> supabase_realtime.
 alter publication supabase_realtime add table public.jobs;
+
+-- Grandfather in anyone who already has activity as a worker before the
+-- approval gate existed — otherwise running this on an existing project
+-- would lock out real workers mid-use. Harmless no-op on a fresh project.
+update public.profiles set worker_approved = true
+where role = 'worker' or id in (select worker_id from public.jobs where worker_id is not null);
 
 -- ---------- make yourself an admin ----------
 -- After you've signed in once (so a profiles row exists for your email),

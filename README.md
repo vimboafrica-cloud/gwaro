@@ -114,6 +114,37 @@ staying on-platform worth more than leaving (the protection banner shown in
 the app, and eventually things like visible reputation/repeat business),
 not just banning people after the fact.
 
+## Quality assurance
+
+Four pieces, from lightest to heaviest:
+
+1. **Request changes**: a delivered job isn't just approve-or-dispute
+   anymore — the client can send it back with a note (`DeliveredReview` in
+   [src/App.jsx](src/App.jsx)), which reopens it as `in_progress` with the
+   note shown to the worker. `jobs.revision_count`/`revision_note` track it.
+2. **Visible reputation**: once a worker is revealed to a client, their
+   completed-job count and average rating show alongside their contact
+   link, computed client-side from existing job data (no new table).
+3. **Worker approval gate**: a worker can't claim jobs until they submit a
+   short work sample and an admin approves it (**Admin → Worker
+   approvals**). Existing workers were grandfathered in by the migration so
+   this doesn't retroactively lock anyone out.
+4. **Probationary cap**: until a worker has 3 completed jobs, they can only
+   have one active job at a time and can't claim anything over $15 —
+   enforced by the same `enforce_worker_claim_eligibility` trigger that
+   checks approval, not just previewed in the UI.
+
+Run
+[supabase/migrations/0006_quality_assurance.sql](supabase/migrations/0006_quality_assurance.sql)
+to enable all of this on an existing project.
+
+**Bug fix bundled into that migration**: the "Suspend client/worker"
+buttons added earlier never actually worked — `profiles` had no RLS policy
+letting an admin update someone *else's* row at all (only "update your own
+row"), so the update was silently filtered out before the enforcement
+trigger even ran. Fixed with an explicit "admins can update any profile"
+policy.
+
 ## Getting client and worker in touch
 
 There's no in-app chat or file upload yet, so once a job is claimed, each
