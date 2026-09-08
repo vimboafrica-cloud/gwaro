@@ -114,6 +114,34 @@ staying on-platform worth more than leaving (the protection banner shown in
 the app, and eventually things like visible reputation/repeat business),
 not just banning people after the fact.
 
+## Competitive bidding (optional, per job)
+
+Alongside the original fixed-price/first-claim flow, a client can post a
+job **"Open for bids"** instead of at a fixed price:
+
+1. Client sets a target price (shown alongside the platform's average for
+   that category, computed from completed jobs).
+2. Approved workers submit their own price + an optional note. **Bids are
+   private** — a worker only ever sees their own bid, never anyone else's.
+3. The client reviews bids (each shows the bidder's star rating/completed
+   jobs) in **My jobs** and awards one via `accept_bid()`.
+4. Only now is the price actually known, so *this* is when the payment gate
+   kicks in — the job moves to `awaiting_payment` at the winning bid's
+   amount, same admin-confirms flow as a fixed-price job, then goes
+   straight to `in_progress` (the worker is already decided, no separate
+   claim step).
+5. Everything downstream (delivery, revision requests, approval, payout,
+   disputes) is identical either way.
+
+There's no bidding deadline — a job stays open for bids until the client
+awards one or clicks **Cancel this job**. The worker-approval gate and the
+new-worker probation cap both still apply to whoever wins a bid — a client
+literally cannot award a bid above the probation cap to a brand-new worker;
+`accept_bid()` will reject it with a clear error.
+
+Run [supabase/migrations/0007_bidding.sql](supabase/migrations/0007_bidding.sql)
+to enable this on an existing project.
+
 ## Quality assurance
 
 Four pieces, from lightest to heaviest:

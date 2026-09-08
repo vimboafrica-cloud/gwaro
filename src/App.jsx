@@ -47,6 +47,15 @@ const PLATFORM_ECOCASH_NUMBER = "0773141598";
 const PROBATION_JOB_THRESHOLD = 3;
 const PROBATION_BUDGET_CAP = 15;
 
+// The platform's prevailing price for a category, from completed jobs —
+// shown as a reference point when posting or bidding on a job.
+function averagePrice(jobs, category) {
+  const done = jobs.filter((j) => j.category === category && j.status === "approved");
+  if (!done.length) return null;
+  const avg = done.reduce((sum, j) => sum + Number(j.budget), 0) / done.length;
+  return { avg, count: done.length };
+}
+
 // A worker's visible track record: completed job count + average rating,
 // computed from jobs already loaded (no extra query needed).
 function workerReputation(jobs, workerId) {
@@ -162,6 +171,7 @@ function StatusBadge({ status, flagged }) {
   }
   const map = {
     awaiting_payment: { label: "Awaiting payment", bg: COLORS.ochreSoft, fg: COLORS.ochre },
+    bidding: { label: "Open for bids", bg: COLORS.tealSoft, fg: COLORS.teal },
     open: { label: "Open", bg: COLORS.tealSoft, fg: COLORS.teal },
     in_progress: { label: "In progress", bg: COLORS.ochreSoft, fg: COLORS.ochre },
     delivered: { label: "Awaiting approval", bg: COLORS.sageSoft, fg: COLORS.sage },
@@ -270,6 +280,101 @@ function PayoutRow({ job, onMarkSent }) {
         </button>
       </div>
     </JobCard>
+  );
+}
+
+function BidForm({ job, myBid, onSubmit, onWithdraw }) {
+  const [amount, setAmount] = useState(myBid ? String(myBid.amount) : "");
+  const [note, setNote] = useState(myBid ? myBid.note || "" : "");
+  const [editing, setEditing] = useState(!myBid);
+
+  if (myBid && !editing) {
+    return (
+      <div className="text-right">
+        <div className="text-sm font-medium" style={{ color: COLORS.ochre }}>
+          Your bid: ${Number(myBid.amount).toFixed(2)}
+        </div>
+        <div className="flex gap-2 justify-end mt-1">
+          <button onClick={() => setEditing(true)} className="text-xs underline" style={{ color: COLORS.inkMuted }}>
+            Edit
+          </button>
+          <button onClick={() => onWithdraw(myBid.id)} className="text-xs underline" style={{ color: COLORS.rust }}>
+            Withdraw
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-56">
+      <input
+        type="number"
+        min="1"
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+        placeholder={`Target: $${Number(job.budget).toFixed(2)}`}
+        className="w-full px-2 py-1.5 text-sm rounded-sm mb-1.5"
+        style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+      />
+      <input
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="Optional note"
+        className="w-full px-2 py-1.5 text-xs rounded-sm mb-1.5"
+        style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+      />
+      <button
+        onClick={() => { if (amount) { onSubmit(Number(amount), note); setEditing(false); } }}
+        disabled={!amount}
+        className="w-full text-sm font-medium px-3 py-1.5 rounded-sm"
+        style={{ background: COLORS.teal, color: COLORS.paper, opacity: amount ? 1 : 0.6 }}
+      >
+        {myBid ? "Update bid" : "Place bid"}
+      </button>
+    </div>
+  );
+}
+
+function BidReviewList({ job, jobs, onAccept, onReject }) {
+  const bids = (job.bids || []).filter((b) => b.status === "pending");
+  if (bids.length === 0) {
+    return <EmptyState text="No bids yet — check back soon." />;
+  }
+  return (
+    <div className="space-y-2 w-72">
+      {bids.map((bid) => {
+        const rep = workerReputation(jobs, bid.worker_id);
+        return (
+          <div key={bid.id} className="flex items-center justify-between p-2.5 rounded-sm" style={{ background: COLORS.paperDark }}>
+            <div className="min-w-0">
+              <div className="text-sm font-medium flex items-center flex-wrap gap-1">
+                {bid.worker_name}
+                <ReputationBadge reputation={rep} />
+              </div>
+              {bid.note && <div className="text-xs" style={{ color: COLORS.inkMuted }}>{bid.note}</div>}
+            </div>
+            <div className="flex items-center gap-2 shrink-0 ml-2">
+              <span className="text-sm font-semibold">${Number(bid.amount).toFixed(2)}</span>
+              <button
+                onClick={() => onAccept(bid.id)}
+                className="text-xs font-medium px-2 py-1 rounded-sm"
+                style={{ background: COLORS.teal, color: COLORS.paper }}
+              >
+                Award
+              </button>
+              <button
+                onClick={() => onReject(bid.id)}
+                className="text-xs underline"
+                style={{ color: COLORS.rust }}
+              >
+                Decline
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -541,6 +646,7 @@ export default function Gwaro() {
     description: "",
     budget: "",
     deadline: "",
+    biddingEnabled: false,
   });
 
   const wallet = 42.5; // placeholder until real EcoCash/OneMoney integration
@@ -799,8 +905,12 @@ export default function Gwaro() {
   const awaitingPayment = jobs.filter((j) => j.status === "awaiting_payment");
 
   function confirmPaymentReceived(id, reference) {
+    // A bidding-derived job already has a worker assigned (from the
+    // accepted bid) — it should go straight to in_progress, not back to
+    // 'open' where it would incorrectly still look claimable by someone else.
+    const job = jobs.find((j) => j.id === id);
     updateJob(id, {
-      status: "open",
+      status: job?.worker_id ? "in_progress" : "open",
       collection_reference: reference.trim() || null,
       collection_confirmed_at: new Date().toISOString(),
     });
@@ -821,9 +931,10 @@ export default function Gwaro() {
       deadline: form.deadline,
       clientId: profile.id,
       clientName: profile.name,
+      biddingEnabled: form.biddingEnabled,
     });
     if (ok) {
-      setForm({ category: CATEGORIES[0], title: "", description: "", budget: "", deadline: "" });
+      setForm({ category: CATEGORIES[0], title: "", description: "", budget: "", deadline: "", biddingEnabled: false });
       setTab("mine");
     }
   }
@@ -984,7 +1095,7 @@ export default function Gwaro() {
   const myJobs = jobs.filter((j) =>
     role === "client" ? j.client_id === profile.id : j.worker_id === profile.id
   );
-  const openJobs = jobs.filter((j) => j.status === "open");
+  const openJobs = jobs.filter((j) => j.status === "open" || j.status === "bidding");
 
   // Mirrors the enforce_worker_claim_eligibility DB trigger — this is only
   // a UI preview of the limit, not the actual enforcement.
@@ -1151,6 +1262,28 @@ export default function Gwaro() {
           <div className="space-y-3">
             {openJobs.length === 0 && <EmptyState text="No open jobs right now. Check back soon." />}
             {openJobs.map((job) => {
+              if (job.status === "bidding") {
+                const myBid = role === "worker" ? (job.bids || []).find((b) => b.worker_id === profile.id && b.status === "pending") : null;
+                return (
+                  <JobCard key={job.id} job={job}>
+                    {role === "worker" ? (
+                      <BidForm
+                        job={job}
+                        myBid={myBid}
+                        onSubmit={(amount, note) => jobsApi.submitBid(job.id, profile.id, profile.name, amount, note)}
+                        onWithdraw={(bidId) => jobsApi.withdrawBid(bidId)}
+                      />
+                    ) : (
+                      <span className="text-sm" style={{ color: COLORS.inkMuted }}>
+                        {job.client_id === profile.id
+                          ? `${(job.bids || []).filter((b) => b.status === "pending").length} bid(s) — review in My jobs`
+                          : "Open for bids"}
+                      </span>
+                    )}
+                  </JobCard>
+                );
+              }
+
               const overCap = onProbation && Number(job.budget) > PROBATION_BUDGET_CAP;
               const overActive = onProbation && myActiveJobCount >= 1;
               const blockedReason = overActive
@@ -1202,6 +1335,41 @@ export default function Gwaro() {
                   {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </Field>
+              {(() => {
+                const priceInfo = averagePrice(jobs, form.category);
+                return priceInfo ? (
+                  <p className="text-xs -mt-2" style={{ color: COLORS.inkMuted }}>
+                    {form.category} jobs have averaged ${priceInfo.avg.toFixed(2)} across {priceInfo.count} completed job{priceInfo.count > 1 ? "s" : ""}.
+                  </p>
+                ) : null;
+              })()}
+              <Field label="Pricing">
+                <div className="flex gap-2">
+                  {[
+                    { value: false, label: "Fixed price" },
+                    { value: true, label: "Open for bids" },
+                  ].map((opt) => (
+                    <button
+                      type="button"
+                      key={String(opt.value)}
+                      onClick={() => setForm({ ...form, biddingEnabled: opt.value })}
+                      className="flex-1 text-sm px-3 py-2 rounded-sm"
+                      style={
+                        form.biddingEnabled === opt.value
+                          ? { background: COLORS.teal, color: COLORS.paper }
+                          : { background: COLORS.paperDark, color: COLORS.inkMuted }
+                      }
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <span className="block text-xs mt-1" style={{ color: COLORS.inkMuted }}>
+                  {form.biddingEnabled
+                    ? "Workers bid their own price; you pick who to award it to."
+                    : "First worker to claim it does the job at your price."}
+                </span>
+              </Field>
               <Field label="Title">
                 <input
                   value={form.title}
@@ -1222,7 +1390,7 @@ export default function Gwaro() {
                 />
               </Field>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="Budget (USD)">
+                <Field label={form.biddingEnabled ? "Target price (USD)" : "Budget (USD)"}>
                   <input
                     type="number"
                     min="1"
@@ -1267,11 +1435,32 @@ export default function Gwaro() {
               />
             )}
             {myJobs.map((job) => {
+              if (job.status === "bidding") {
+                return (
+                  <JobCard key={job.id} job={job}>
+                    <div className="flex flex-col items-end gap-2">
+                      <BidReviewList
+                        job={job}
+                        jobs={jobs}
+                        onAccept={jobsApi.acceptBid}
+                        onReject={jobsApi.rejectBid}
+                      />
+                      <button
+                        onClick={() => updateJob(job.id, { status: "cancelled" })}
+                        className="text-xs underline"
+                        style={{ color: COLORS.inkMuted }}
+                      >
+                        Cancel this job
+                      </button>
+                    </div>
+                  </JobCard>
+                );
+              }
               const { commission, transferCost, net } = payoutBreakdown(Number(job.budget));
               return (
                 <JobCard key={job.id} job={job}>
                   <div className="flex flex-col items-end gap-2">
-                    {job.worker_id && job.status !== "cancelled" && (
+                    {job.worker_id && job.status !== "cancelled" && job.status !== "awaiting_payment" && (
                       role === "client" ? (
                         <ContactLink
                           label="Worker"
@@ -1289,9 +1478,17 @@ export default function Gwaro() {
                         <div className="text-sm font-medium my-1">{PLATFORM_ECOCASH_NUMBER}</div>
                         <div className="font-medium">${Number(job.budget).toFixed(2)}</div>
                         <div className="mt-1" style={{ color: COLORS.inkMuted }}>
-                          We'll open it up to workers once payment is confirmed.
+                          {job.worker_id
+                            ? `We'll let ${job.worker_name} start once payment is confirmed.`
+                            : "We'll open it up to workers once payment is confirmed."}
                         </div>
                       </div>
+                    )}
+
+                    {role === "worker" && job.status === "awaiting_payment" && (
+                      <span className="text-xs" style={{ color: COLORS.inkMuted }}>
+                        You won this bid — waiting on the client's payment before you can start.
+                      </span>
                     )}
 
                     {role === "worker" && job.status === "in_progress" && job.revision_note && (

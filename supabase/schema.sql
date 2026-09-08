@@ -128,7 +128,13 @@ create table if not exists public.jobs (
   -- arrived — see supabase/migrations/0004_payment_gate.sql for why this
   -- exists (nothing captured any payment at all before it did) and the
   -- trigger below that makes it a real gate, not just a UI convention.
-  status text not null default 'awaiting_payment' check (status in ('awaiting_payment','open','in_progress','delivered','approved','cancelled')),
+  -- 'bidding' is a bidding-enabled job's starting state instead — see
+  -- supabase/migrations/0007_bidding.sql for how it feeds back into
+  -- awaiting_payment once a bid is accepted (the price is only known then).
+  status text not null default 'awaiting_payment' check (status in ('awaiting_payment','open','bidding','in_progress','delivered','approved','cancelled')),
+  -- Set at posting time; a bidding job has no assigned worker or fixed
+  -- price until accept_bid() (below) picks a winner. See 0007_bidding.sql.
+  bidding_enabled boolean not null default false,
   client_id uuid not null references public.profiles(id),
   client_name text not null,
   worker_id uuid references public.profiles(id),
@@ -160,13 +166,20 @@ create policy "jobs are viewable by everyone signed in"
   on public.jobs for select
   using (auth.role() = 'authenticated');
 
--- Requires status = 'awaiting_payment' at insert time — a client can't post
--- a job that's already 'open', only the payment-gate trigger below (via an
--- admin) can move it there.
+-- A fixed-price job must start 'awaiting_payment'; a bidding-enabled job
+-- starts 'bidding' instead (no price to collect yet). Either way, a client
+-- can't post a job that's already 'open' — only the payment-gate trigger
+-- below (via an admin), or accept_bid() for a bidding job, can move it there.
 drop policy if exists "clients can post their own jobs" on public.jobs;
 create policy "clients can post their own jobs"
   on public.jobs for insert
-  with check (auth.uid() = client_id and status = 'awaiting_payment');
+  with check (
+    auth.uid() = client_id
+    and (
+      (bidding_enabled = false and status = 'awaiting_payment')
+      or (bidding_enabled = true and status = 'bidding')
+    )
+  );
 
 -- Covers: a client editing/cancelling their own job, a worker claiming an
 -- open unclaimed job or updating a job already assigned to them, and an
@@ -259,10 +272,112 @@ create trigger jobs_enforce_worker_claim_eligibility
   for each row
   execute function public.enforce_worker_claim_eligibility();
 
--- Realtime: lets every open browser see job changes live (claims, delivery,
--- approval, disputes, payouts) without polling. Enable it either here or via
--- Dashboard -> Database -> Replication -> supabase_realtime.
+-- ---------- bids ----------
+-- Private bids: a worker sees only their own; the job's client sees every
+-- bid on jobs they posted. See supabase/migrations/0007_bidding.sql.
+create table if not exists public.bids (
+  id uuid primary key default gen_random_uuid(),
+  job_id text not null references public.jobs(id) on delete cascade,
+  worker_id uuid not null references public.profiles(id),
+  worker_name text not null,
+  amount numeric not null check (amount > 0),
+  note text,
+  status text not null default 'pending' check (status in ('pending','accepted','rejected','withdrawn')),
+  created_at timestamptz not null default now(),
+  unique (job_id, worker_id)
+);
+
+alter table public.bids enable row level security;
+
+drop policy if exists "a worker sees their own bids, a client sees bids on their jobs" on public.bids;
+create policy "a worker sees their own bids, a client sees bids on their jobs"
+  on public.bids for select
+  using (
+    auth.uid() = worker_id
+    or exists (select 1 from public.jobs j where j.id = bids.job_id and j.client_id = auth.uid())
+    or public.is_admin()
+  );
+
+drop policy if exists "an approved worker can bid on a job open for bidding" on public.bids;
+create policy "an approved worker can bid on a job open for bidding"
+  on public.bids for insert
+  with check (
+    auth.uid() = worker_id
+    and exists (select 1 from public.profiles p where p.id = worker_id and p.worker_approved = true)
+    and exists (select 1 from public.jobs j where j.id = bids.job_id and j.status = 'bidding' and j.bidding_enabled = true)
+  );
+
+-- A worker can edit/withdraw their own still-pending bid; the job's client
+-- can reject a bid on their own job (accepting one goes through accept_bid()
+-- below instead, since it has side effects on the job and every other bid).
+drop policy if exists "a worker can update their pending bid, a client can reject one" on public.bids;
+create policy "a worker can update their pending bid, a client can reject one"
+  on public.bids for update
+  using (
+    (auth.uid() = worker_id and status = 'pending')
+    or exists (select 1 from public.jobs j where j.id = bids.job_id and j.client_id = auth.uid())
+    or public.is_admin()
+  )
+  with check (
+    auth.uid() = worker_id
+    or exists (select 1 from public.jobs j where j.id = bids.job_id and j.client_id = auth.uid())
+    or public.is_admin()
+  );
+
+-- Awarding a bid touches two tables atomically (the job, and every bid on
+-- it) and needs its own authorization check, so it's a function rather
+-- than a plain client-side update. Runs as security definer; the
+-- enforce_worker_claim_eligibility trigger above still fires regardless
+-- (triggers aren't bypassed by RLS) — that's what re-checks the winning
+-- worker's approval/probation status here, same as a normal claim.
+create or replace function public.accept_bid(p_bid_id uuid)
+returns void
+language plpgsql
+security definer
+as $$
+declare
+  v_job_id text;
+  v_worker_id uuid;
+  v_worker_name text;
+  v_amount numeric;
+  v_client_id uuid;
+begin
+  select b.job_id, b.worker_id, b.worker_name, b.amount, j.client_id
+    into v_job_id, v_worker_id, v_worker_name, v_amount, v_client_id
+    from public.bids b
+    join public.jobs j on j.id = b.job_id
+    where b.id = p_bid_id and b.status = 'pending';
+
+  if v_job_id is null then
+    raise exception 'Bid not found, or it has already been decided';
+  end if;
+
+  if auth.uid() <> v_client_id and not public.is_admin() then
+    raise exception 'Only this job''s client can accept a bid';
+  end if;
+
+  update public.jobs
+    set worker_id = v_worker_id,
+        worker_name = v_worker_name,
+        budget = v_amount,
+        status = 'awaiting_payment',
+        bidding_enabled = false
+    where id = v_job_id;
+
+  update public.bids set status = 'accepted' where id = p_bid_id;
+  update public.bids set status = 'rejected' where job_id = v_job_id and id <> p_bid_id and status = 'pending';
+end;
+$$;
+
+revoke all on function public.accept_bid(uuid) from public;
+grant execute on function public.accept_bid(uuid) to authenticated;
+
+-- Realtime: lets every open browser see job and bid changes live (claims,
+-- delivery, approval, disputes, payouts, new bids) without polling. Enable
+-- it either here or via Dashboard -> Database -> Replication ->
+-- supabase_realtime.
 alter publication supabase_realtime add table public.jobs;
+alter publication supabase_realtime add table public.bids;
 
 -- Grandfather in anyone who already has activity as a worker before the
 -- approval gate existed — otherwise running this on an existing project
