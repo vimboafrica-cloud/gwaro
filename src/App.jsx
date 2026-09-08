@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import {
   Wallet, FileText, PenLine, Mic, Briefcase, Clock, CheckCircle2,
   Flag, Star, Inbox, PlusCircle, ArrowRight, Loader2, AlertTriangle, Mail, Smartphone,
-  Building2, PencilRuler
+  Building2, PencilRuler, Database, SpellCheck, Languages, Palette, Presentation,
+  Calculator, Headphones, Captions, Clapperboard, Scale
 } from "lucide-react";
 import { supabaseConfigured } from "./lib/supabaseClient";
 import { useAuth } from "./hooks/useAuth";
@@ -33,6 +34,20 @@ const CATEGORY_META = {
   "CV & business docs": { icon: Briefcase },
   "Architectural plans": { icon: Building2 },
   "Engineering drawings": { icon: PencilRuler },
+  "Data entry": { icon: Database },
+  "Proofreading & editing": { icon: SpellCheck },
+  Translation: { icon: Languages },
+  "Graphic design": { icon: Palette },
+  "Presentation design": { icon: Presentation },
+  Bookkeeping: { icon: Calculator },
+  "Voiceover & audio recording": { icon: Headphones },
+  "Subtitling & captioning": { icon: Captions },
+  "Basic video editing": { icon: Clapperboard },
+  "Legal document drafting": {
+    icon: Scale,
+    disclaimer:
+      "Formatting/typing help only — not legal advice. Gwaro doesn't vouch for legal correctness; for real legal matters, consult a licensed lawyer.",
+  },
 };
 const CATEGORIES = Object.keys(CATEGORY_META);
 
@@ -1343,6 +1358,12 @@ export default function Gwaro() {
                   </p>
                 ) : null;
               })()}
+              {CATEGORY_META[form.category]?.disclaimer && (
+                <p className="text-xs p-2 rounded-sm flex items-start gap-1.5" style={{ background: COLORS.rustSoft, color: COLORS.rust }}>
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                  {CATEGORY_META[form.category].disclaimer}
+                </p>
+              )}
               <Field label="Pricing">
                 <div className="flex gap-2">
                   {[
