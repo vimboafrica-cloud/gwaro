@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import {
   Wallet, FileText, PenLine, Mic, Briefcase, Clock, CheckCircle2,
-  Flag, Star, Inbox, PlusCircle, ArrowRight, Loader2, AlertTriangle, Mail, Smartphone
+  Flag, Star, Inbox, PlusCircle, ArrowRight, Loader2, AlertTriangle, Mail, Smartphone,
+  Building2, PencilRuler
 } from "lucide-react";
 import { supabaseConfigured } from "./lib/supabaseClient";
 import { useAuth } from "./hooks/useAuth";
@@ -30,6 +31,8 @@ const CATEGORY_META = {
   Writing: { icon: PenLine },
   Transcription: { icon: Mic },
   "CV & business docs": { icon: Briefcase },
+  "Architectural plans": { icon: Building2 },
+  "Engineering drawings": { icon: PencilRuler },
 };
 const CATEGORIES = Object.keys(CATEGORY_META);
 
