@@ -178,6 +178,40 @@ function payoutBreakdown(budget) {
   return { commission, transferCost, net };
 }
 
+// A simple, templated WhatsApp/Facebook-ready announcement for an open or
+// bidding job — mechanical rather than hand-paraphrased, but free (no AI
+// backend needed) and instant. See src/App.jsx git history for the option
+// to upgrade this to real AI-generated copy via a backend function later.
+function generateAnnouncement(job) {
+  const priceLine =
+    job.bidding_enabled || job.status === "bidding"
+      ? `target price ~$${Number(job.budget).toFixed(0)}, open for bids`
+      : `budget: $${Number(job.budget).toFixed(0)}`;
+  const desc = job.description ? ` ${job.description}.` : "";
+  return `New on Gwaro: ${job.category} — ${job.title}.${desc} ${priceLine}. Apply on Gwaro if interested!`;
+}
+
+function CopyAnnouncementButton({ job }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(generateAnnouncement(job));
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        } catch {
+          // clipboard access can fail (permissions, insecure context) — fail quietly
+        }
+      }}
+      className="text-xs font-medium px-2.5 py-1 rounded-sm"
+      style={{ background: copied ? COLORS.sage : COLORS.paperDark, color: copied ? "white" : COLORS.inkMuted }}
+    >
+      {copied ? "Copied!" : "Copy announcement"}
+    </button>
+  );
+}
+
 // The platform's actual earnings for accounting/tax purposes: the 15%
 // commission is real revenue; the 3% transfer cost is a pass-through
 // (roughly covers the real EcoCash transaction fee), not profit — kept
@@ -1591,13 +1625,16 @@ export default function Gwaro() {
                         onAccept={jobsApi.acceptBid}
                         onReject={jobsApi.rejectBid}
                       />
-                      <button
-                        onClick={() => updateJob(job.id, { status: "cancelled" })}
-                        className="text-xs underline"
-                        style={{ color: COLORS.inkMuted }}
-                      >
-                        Cancel this job
-                      </button>
+                      <div className="flex items-center gap-3">
+                        <CopyAnnouncementButton job={job} />
+                        <button
+                          onClick={() => updateJob(job.id, { status: "cancelled" })}
+                          className="text-xs underline"
+                          style={{ color: COLORS.inkMuted }}
+                        >
+                          Cancel this job
+                        </button>
+                      </div>
                     </div>
                   </JobCard>
                 );
@@ -1606,6 +1643,9 @@ export default function Gwaro() {
               return (
                 <JobCard key={job.id} job={job}>
                   <div className="flex flex-col items-end gap-2">
+                    {role === "client" && job.status === "open" && (
+                      <CopyAnnouncementButton job={job} />
+                    )}
                     {job.worker_id && job.status !== "cancelled" && job.status !== "awaiting_payment" && (
                       role === "client" ? (
                         <ContactLink
