@@ -155,6 +155,38 @@ it):
    actual legal entity once registered, so the rules are the company's
    terms, not one person's informal ones.
 
+## Multi-currency: USD and ZiG (Zimbabwe Gold)
+
+A client picks USD or ZiG when posting a job; that job's budget, bids, and
+payout all stay in that same currency end to end.
+
+**No exchange rate is stored or used anywhere in settlement logic.**
+Zimbabwe's official-vs-parallel exchange rate gap is real and persistent
+(~20%+ as of writing, not an occasional blip), so converting between the
+two anywhere money actually moves would be taking on real financial risk
+this platform has no business taking on. Concretely:
+
+- The probation budget cap (new workers) is **two independent native
+  constants** — `PROBATION_BUDGET_CAP_USD` and `PROBATION_BUDGET_CAP_ZIG`
+  in `src/App.jsx` (mirrored in the `enforce_worker_claim_eligibility`
+  trigger) — not one derived from the other. Update the ZiG one yourself as
+  its value moves.
+- **Revenue reports and wallet totals never sum across currencies.** A $10
+  USD job and a ZiG 266 job are shown as two separate totals, never added
+  into one number — doing so would imply a precision the actual exchange
+  rate doesn't have.
+- The average-price hint shown when posting a job is computed per
+  category **and** per currency — never mixed.
+
+Run [supabase/migrations/0009_multicurrency.sql](supabase/migrations/0009_multicurrency.sql)
+to enable this on an existing project.
+
+**Open question, not yet confirmed**: `PLATFORM_ECOCASH_NUMBER` is currently
+one number for both currencies, on the assumption EcoCash's USD and ZiG
+wallets sit behind the same phone number. Confirm this operationally — if a
+currency needs a different line, that constant needs to become a
+per-currency map.
+
 ## Competitive bidding (optional, per job)
 
 Alongside the original fixed-price/first-claim flow, a client can post a

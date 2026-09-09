@@ -57,23 +57,49 @@ const CATEGORY_META = {
 const CATEGORIES = Object.keys(CATEGORY_META);
 
 // The EcoCash number clients pay job budgets into (shown on every
-// awaiting-payment job in the client's "My jobs" view).
+// awaiting-payment job in the client's "My jobs" view). Same number for
+// both currencies on the assumption EcoCash's USD and ZiG wallets sit
+// behind one phone number — confirm this operationally; if a currency
+// ever needs a different line, split this into a per-currency map.
 const PLATFORM_ECOCASH_NUMBER = "0773141598";
 
 // TODO: update once a real custom domain is set up.
 const PLATFORM_URL = "https://gwaro-8nol.vercel.app";
 
-// Must match the same-named constants in the enforce_worker_claim_eligibility
-// trigger (supabase/migrations/0006_quality_assurance.sql) — these are only
-// used here to explain/preview the limit in the UI; the trigger is what
-// actually enforces it.
+// Two independent, natively-set caps — NOT one converted from the other via
+// an exchange rate. Zimbabwe's official-vs-parallel rate gap is real and
+// persistent (see supabase/migrations/0009_multicurrency.sql), so no single
+// "the" rate is safe to build settlement-adjacent logic on. Update
+// PROBATION_BUDGET_CAP_ZIG yourself as ZiG's value moves. Must match the
+// same-named constants in the enforce_worker_claim_eligibility trigger —
+// these are only used here to preview the limit in the UI; the trigger is
+// what actually enforces it.
 const PROBATION_JOB_THRESHOLD = 3;
-const PROBATION_BUDGET_CAP = 15;
+const PROBATION_BUDGET_CAP_USD = 15;
+const PROBATION_BUDGET_CAP_ZIG = 400;
 
-// The platform's prevailing price for a category, from completed jobs —
-// shown as a reference point when posting or bidding on a job.
-function averagePrice(jobs, category) {
-  const done = jobs.filter((j) => j.category === category && j.status === "approved");
+// Currency display config. Amounts are NEVER converted between these two —
+// a job's currency is fixed at posting and its budget/bids/payout all stay
+// in it end to end. See supabase/migrations/0009_multicurrency.sql.
+const CURRENCIES = {
+  USD: { symbol: "$", label: "USD" },
+  ZIG: { symbol: "ZiG ", label: "ZiG" },
+};
+
+function formatMoney(amount, currency) {
+  const cfg = CURRENCIES[currency] || CURRENCIES.USD;
+  return `${cfg.symbol}${Number(amount).toFixed(2)}`;
+}
+
+function probationCapFor(currency) {
+  return currency === "ZIG" ? PROBATION_BUDGET_CAP_ZIG : PROBATION_BUDGET_CAP_USD;
+}
+
+// The platform's prevailing price for a category+currency, from completed
+// jobs — shown as a reference point when posting or bidding on a job. Never
+// mixes currencies into one average.
+function averagePrice(jobs, category, currency) {
+  const done = jobs.filter((j) => j.category === category && j.currency === currency && j.status === "approved");
   if (!done.length) return null;
   const avg = done.reduce((sum, j) => sum + Number(j.budget), 0) / done.length;
   return { avg, count: done.length };
@@ -91,22 +117,33 @@ function workerReputation(jobs, workerId) {
 // Real wallet figures, computed from actual job data — not a placeholder.
 // Worker: net earnings actually paid out, plus what's approved and pending
 // payout. Client: total actually spent (payment confirmed), excluding
-// anything later refunded via a cancelled job.
+// anything later refunded via a cancelled job. Returns one entry per
+// currency the person actually has activity in — never a combined total,
+// same reasoning as revenue (see supabase/migrations/0009_multicurrency.sql).
 function walletSummary(jobs, profile) {
-  if (profile.role === "worker") {
-    const mine = jobs.filter((j) => j.worker_id === profile.id);
-    const paid = mine
-      .filter((j) => j.payout_status === "sent")
-      .reduce((sum, j) => sum + payoutBreakdown(Number(j.budget)).net, 0);
-    const pending = mine
-      .filter((j) => j.payout_status === "pending")
-      .reduce((sum, j) => sum + payoutBreakdown(Number(j.budget)).net, 0);
-    return { label: "Earned", headline: paid, pending };
-  }
-  const spent = jobs
-    .filter((j) => j.client_id === profile.id && ["in_progress", "delivered", "approved"].includes(j.status))
-    .reduce((sum, j) => sum + Number(j.budget), 0);
-  return { label: "Spent", headline: spent, pending: 0 };
+  const label = profile.role === "worker" ? "Earned" : "Spent";
+  const entries = ["USD", "ZIG"].map((currency) => {
+    if (profile.role === "worker") {
+      const mine = jobs.filter((j) => j.worker_id === profile.id && (j.currency === "ZIG" ? "ZIG" : "USD") === currency);
+      const headline = mine
+        .filter((j) => j.payout_status === "sent")
+        .reduce((sum, j) => sum + payoutBreakdown(Number(j.budget)).net, 0);
+      const pending = mine
+        .filter((j) => j.payout_status === "pending")
+        .reduce((sum, j) => sum + payoutBreakdown(Number(j.budget)).net, 0);
+      return { currency, headline, pending };
+    }
+    const headline = jobs
+      .filter(
+        (j) =>
+          j.client_id === profile.id &&
+          (j.currency === "ZIG" ? "ZIG" : "USD") === currency &&
+          ["in_progress", "delivered", "approved"].includes(j.status)
+      )
+      .reduce((sum, j) => sum + Number(j.budget), 0);
+    return { currency, headline, pending: 0 };
+  });
+  return { label, entries: entries.filter((e) => e.headline > 0 || e.pending > 0) };
 }
 
 // Plain-language platform rules, not a lawyer-drafted legal document — get
@@ -207,10 +244,11 @@ function payoutBreakdown(budget) {
 // backend needed) and instant. See src/App.jsx git history for the option
 // to upgrade this to real AI-generated copy via a backend function later.
 function generateAnnouncement(job) {
+  const amount = formatMoney(job.budget, job.currency);
   const priceLine =
     job.bidding_enabled || job.status === "bidding"
-      ? `target price ~$${Number(job.budget).toFixed(0)}, open for bids`
-      : `budget: $${Number(job.budget).toFixed(0)}`;
+      ? `target price ~${amount}, open for bids`
+      : `budget: ${amount}`;
   const desc = job.description ? ` ${job.description}.` : "";
   const link = `${PLATFORM_URL}/?job=${encodeURIComponent(job.id)}`;
   return `New on Gwaro: ${job.category} — ${job.title}.${desc} ${priceLine}. Apply here: ${link}`;
@@ -244,32 +282,39 @@ function CopyAnnouncementButton({ job }) {
 // client's payment was actually confirmed (collection_confirmed_at), since
 // that's when the money genuinely arrived — falling back to created_at for
 // older jobs from before that field existed.
+// Never sums across currencies — a $10 USD job and a ZiG 266 job are not
+// meaningfully addable without an exchange rate, and this app deliberately
+// doesn't use one for anything money-related (see
+// supabase/migrations/0009_multicurrency.sql). Each currency gets its own
+// complete, independent set of totals.
+function emptyCurrencyTotals() {
+  return { grossTotal: 0, commissionTotal: 0, transferCostTotal: 0, byCategory: {}, byMonth: {} };
+}
+
 function computeRevenueSummary(jobs) {
   const completed = jobs.filter((j) => j.status === "approved");
-  let grossTotal = 0;
-  let commissionTotal = 0;
-  let transferCostTotal = 0;
-  const byCategory = {};
-  const byMonth = {};
+  const byCurrency = { USD: emptyCurrencyTotals(), ZIG: emptyCurrencyTotals() };
 
   completed.forEach((j) => {
+    const currency = j.currency === "ZIG" ? "ZIG" : "USD";
+    const totals = byCurrency[currency];
     const budget = Number(j.budget);
     const { commission, transferCost } = payoutBreakdown(budget);
-    grossTotal += budget;
-    commissionTotal += commission;
-    transferCostTotal += transferCost;
-    byCategory[j.category] = (byCategory[j.category] || 0) + commission;
+    totals.grossTotal += budget;
+    totals.commissionTotal += commission;
+    totals.transferCostTotal += transferCost;
+    totals.byCategory[j.category] = (totals.byCategory[j.category] || 0) + commission;
     const dateBasis = j.collection_confirmed_at || j.created_at || "";
     const month = dateBasis.slice(0, 7) || "Unknown";
-    byMonth[month] = (byMonth[month] || 0) + commission;
+    totals.byMonth[month] = (totals.byMonth[month] || 0) + commission;
   });
 
-  return { completed, grossTotal, commissionTotal, transferCostTotal, byCategory, byMonth };
+  return { completed, byCurrency };
 }
 
 function downloadRevenueCsv(completedJobs) {
   const header = [
-    "Job ID", "Date", "Category", "Client", "Worker",
+    "Job ID", "Date", "Category", "Currency", "Client", "Worker",
     "Budget", "Platform commission (15%)", "Transfer cost (3%)", "Worker payout", "Payout reference",
   ];
   const rows = completedJobs.map((j) => {
@@ -277,7 +322,7 @@ function downloadRevenueCsv(completedJobs) {
     const { commission, transferCost, net } = payoutBreakdown(budget);
     const date = (j.collection_confirmed_at || j.created_at || "").slice(0, 10);
     return [
-      j.id, date, j.category, j.client_name, j.worker_name || "",
+      j.id, date, j.category, j.currency || "USD", j.client_name, j.worker_name || "",
       budget.toFixed(2), commission.toFixed(2), transferCost.toFixed(2), net.toFixed(2), j.payout_reference || "",
     ];
   });
@@ -300,7 +345,7 @@ function downloadRevenueCsv(completedJobs) {
 // categorical color needed since each bar already carries its own label and
 // value as text, not just as a hover tooltip, so the chart stays a "table"
 // too rather than hiding data behind color/hover alone.
-function RevenueBarChart({ data }) {
+function RevenueBarChart({ data, currency }) {
   const max = Math.max(...data.map((d) => d.value), 0.01);
   return (
     <div className="space-y-1.5">
@@ -315,7 +360,7 @@ function RevenueBarChart({ data }) {
           </span>
           <div className="flex-1 rounded-sm" style={{ background: COLORS.paperDark, height: 14 }}>
             <div
-              title={`$${d.value.toFixed(2)}`}
+              title={formatMoney(d.value, currency)}
               style={{
                 width: `${Math.max((d.value / max) * 100, 4)}%`,
                 height: "100%",
@@ -324,7 +369,7 @@ function RevenueBarChart({ data }) {
               }}
             />
           </div>
-          <span className="text-xs font-medium w-16 text-right shrink-0">${d.value.toFixed(2)}</span>
+          <span className="text-xs font-medium w-20 text-right shrink-0">{formatMoney(d.value, currency)}</span>
         </div>
       ))}
     </div>
@@ -419,7 +464,7 @@ function JobCard({ job, children, id, highlighted }) {
           <p className="text-sm mb-2" style={{ color: COLORS.inkMuted }}>{job.description}</p>
         )}
         <div className="flex items-center gap-3 text-xs flex-wrap" style={{ color: COLORS.inkMuted }}>
-          <span className="font-medium" style={{ color: COLORS.ink }}>${Number(job.budget).toFixed(2)}</span>
+          <span className="font-medium" style={{ color: COLORS.ink }}>{formatMoney(job.budget, job.currency)}</span>
           {job.deadline && <span className="flex items-center gap-1"><Clock size={11} /> {job.deadline}</span>}
           <span>{job.client_name}{job.worker_name ? ` → ${job.worker_name}` : ""}</span>
         </div>
@@ -441,7 +486,7 @@ function PayoutRow({ job, onMarkSent }) {
             {job.worker_profile?.ecocash_number || "no number on file"}
           </span>
         </div>
-        <div className="text-sm font-medium w-full text-right">Send ${net.toFixed(2)}</div>
+        <div className="text-sm font-medium w-full text-right">Send {formatMoney(net, job.currency)}</div>
         <input
           value={reference}
           onChange={(e) => setReference(e.target.value)}
@@ -470,7 +515,7 @@ function BidForm({ job, myBid, onSubmit, onWithdraw }) {
     return (
       <div className="text-right">
         <div className="text-sm font-medium" style={{ color: COLORS.ochre }}>
-          Your bid: ${Number(myBid.amount).toFixed(2)}
+          Your bid: {formatMoney(myBid.amount, job.currency)}
         </div>
         <div className="flex gap-2 justify-end mt-1">
           <button onClick={() => setEditing(true)} className="text-xs underline" style={{ color: COLORS.inkMuted }}>
@@ -491,7 +536,7 @@ function BidForm({ job, myBid, onSubmit, onWithdraw }) {
         min="1"
         value={amount}
         onChange={(e) => setAmount(e.target.value)}
-        placeholder={`Target: $${Number(job.budget).toFixed(2)}`}
+        placeholder={`Target: ${formatMoney(job.budget, job.currency)}`}
         className="w-full px-2 py-1.5 text-sm rounded-sm mb-1.5"
         style={{ background: "white", border: `1px solid ${COLORS.line}` }}
       />
@@ -533,7 +578,7 @@ function BidReviewList({ job, jobs, onAccept, onReject }) {
               {bid.note && <div className="text-xs" style={{ color: COLORS.inkMuted }}>{bid.note}</div>}
             </div>
             <div className="flex items-center gap-2 shrink-0 ml-2">
-              <span className="text-sm font-semibold">${Number(bid.amount).toFixed(2)}</span>
+              <span className="text-sm font-semibold">{formatMoney(bid.amount, job.currency)}</span>
               <button
                 onClick={() => onAccept(bid.id)}
                 className="text-xs font-medium px-2 py-1 rounded-sm"
@@ -597,19 +642,19 @@ function DeliveredReview({ job, commission, transferCost, net, onApprove, onRequ
     <div className="text-xs rounded-sm px-3 py-2 w-56" style={{ background: COLORS.paperDark }}>
       <div className="flex justify-between mb-0.5">
         <span style={{ color: COLORS.inkMuted }}>Job budget</span>
-        <span>${Number(job.budget).toFixed(2)}</span>
+        <span>{formatMoney(job.budget, job.currency)}</span>
       </div>
       <div className="flex justify-between mb-0.5">
         <span style={{ color: COLORS.inkMuted }}>Platform fee (15%)</span>
-        <span>-${commission.toFixed(2)}</span>
+        <span>-{formatMoney(commission, job.currency)}</span>
       </div>
       <div className="flex justify-between mb-1.5">
         <span style={{ color: COLORS.inkMuted }}>Mobile money transfer</span>
-        <span>-${transferCost.toFixed(2)}</span>
+        <span>-{formatMoney(transferCost, job.currency)}</span>
       </div>
       <div className="flex justify-between pt-1.5 font-medium" style={{ borderTop: `1px solid ${COLORS.line}` }}>
         <span>Worker receives</span>
-        <span>${net.toFixed(2)}</span>
+        <span>{formatMoney(net, job.currency)}</span>
       </div>
       <button
         onClick={onApprove}
@@ -689,7 +734,7 @@ function CollectionRow({ job, onConfirm }) {
             {job.client_profile?.phone || "no number on file"}
           </span>
         </div>
-        <div className="text-sm font-medium w-full text-right">Expect ${Number(job.budget).toFixed(2)}</div>
+        <div className="text-sm font-medium w-full text-right">Expect {formatMoney(job.budget, job.currency)}</div>
         <input
           value={reference}
           onChange={(e) => setReference(e.target.value)}
@@ -839,6 +884,7 @@ export default function Gwaro() {
     budget: "",
     deadline: "",
     biddingEnabled: false,
+    currency: "USD",
   });
 
   // ---------------- render: not configured ----------------
@@ -1124,9 +1170,10 @@ export default function Gwaro() {
       clientId: profile.id,
       clientName: profile.name,
       biddingEnabled: form.biddingEnabled,
+      currency: form.currency,
     });
     if (ok) {
-      setForm({ category: CATEGORIES[0], title: "", description: "", budget: "", deadline: "", biddingEnabled: false });
+      setForm({ category: CATEGORIES[0], title: "", description: "", budget: "", deadline: "", biddingEnabled: false, currency: "USD" });
       setTab("mine");
     }
   }
@@ -1285,43 +1332,67 @@ export default function Gwaro() {
               <EmptyState text="Completed jobs will show up here as platform revenue." />
             ) : (
               <>
-                <div className="grid grid-cols-2 gap-3 mb-4">
-                  <div className="p-3 rounded-sm" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
-                    <div className="text-xs" style={{ color: COLORS.inkMuted }}>Completed jobs</div>
-                    <div className="text-lg font-semibold">{revenue.completed.length}</div>
-                  </div>
-                  <div className="p-3 rounded-sm" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
-                    <div className="text-xs" style={{ color: COLORS.inkMuted }}>Gross job value</div>
-                    <div className="text-lg font-semibold">${revenue.grossTotal.toFixed(2)}</div>
-                  </div>
-                  <div className="p-3 rounded-sm" style={{ background: COLORS.sageSoft }}>
-                    <div className="text-xs" style={{ color: COLORS.inkMuted }}>Platform revenue (15%)</div>
-                    <div className="text-lg font-semibold" style={{ color: COLORS.sage }}>${revenue.commissionTotal.toFixed(2)}</div>
-                  </div>
-                  <div className="p-3 rounded-sm" style={{ background: COLORS.paperDark }}>
-                    <div className="text-xs" style={{ color: COLORS.inkMuted }}>Transfer costs (3%, pass-through)</div>
-                    <div className="text-lg font-semibold" style={{ color: COLORS.inkMuted }}>${revenue.transferCostTotal.toFixed(2)}</div>
-                  </div>
-                </div>
+                <p className="text-xs mb-4 flex items-start gap-1.5" style={{ color: COLORS.inkMuted }}>
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                  USD and ZiG are shown separately, never summed — see README for why.
+                </p>
+                {["USD", "ZIG"].map((currency) => {
+                  const totals = revenue.byCurrency[currency];
+                  const completedForCurrency = revenue.completed.filter(
+                    (j) => (j.currency === "ZIG" ? "ZIG" : "USD") === currency
+                  );
+                  if (completedForCurrency.length === 0) return null;
+                  return (
+                    <div key={currency} className="mb-6">
+                      <div className="text-xs font-semibold mb-2" style={{ color: COLORS.teal }}>
+                        {CURRENCIES[currency].label}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 mb-4">
+                        <div className="p-3 rounded-sm" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                          <div className="text-xs" style={{ color: COLORS.inkMuted }}>Completed jobs</div>
+                          <div className="text-lg font-semibold">{completedForCurrency.length}</div>
+                        </div>
+                        <div className="p-3 rounded-sm" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                          <div className="text-xs" style={{ color: COLORS.inkMuted }}>Gross job value</div>
+                          <div className="text-lg font-semibold">{formatMoney(totals.grossTotal, currency)}</div>
+                        </div>
+                        <div className="p-3 rounded-sm" style={{ background: COLORS.sageSoft }}>
+                          <div className="text-xs" style={{ color: COLORS.inkMuted }}>Platform revenue (15%)</div>
+                          <div className="text-lg font-semibold" style={{ color: COLORS.sage }}>
+                            {formatMoney(totals.commissionTotal, currency)}
+                          </div>
+                        </div>
+                        <div className="p-3 rounded-sm" style={{ background: COLORS.paperDark }}>
+                          <div className="text-xs" style={{ color: COLORS.inkMuted }}>Transfer costs (3%, pass-through)</div>
+                          <div className="text-lg font-semibold" style={{ color: COLORS.inkMuted }}>
+                            {formatMoney(totals.transferCostTotal, currency)}
+                          </div>
+                        </div>
+                      </div>
 
-                <div className="grid grid-cols-2 gap-4 mb-4">
-                  <div>
-                    <div className="text-xs font-medium mb-2" style={{ color: COLORS.inkMuted }}>Revenue by category</div>
-                    <RevenueBarChart
-                      data={Object.entries(revenue.byCategory)
-                        .sort((a, b) => b[1] - a[1])
-                        .map(([label, value]) => ({ label, value }))}
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium mb-2" style={{ color: COLORS.inkMuted }}>Revenue by month</div>
-                    <RevenueBarChart
-                      data={Object.entries(revenue.byMonth)
-                        .sort((a, b) => a[0].localeCompare(b[0]))
-                        .map(([label, value]) => ({ label, value }))}
-                    />
-                  </div>
-                </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <div className="text-xs font-medium mb-2" style={{ color: COLORS.inkMuted }}>Revenue by category</div>
+                          <RevenueBarChart
+                            currency={currency}
+                            data={Object.entries(totals.byCategory)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([label, value]) => ({ label, value }))}
+                          />
+                        </div>
+                        <div>
+                          <div className="text-xs font-medium mb-2" style={{ color: COLORS.inkMuted }}>Revenue by month</div>
+                          <RevenueBarChart
+                            currency={currency}
+                            data={Object.entries(totals.byMonth)
+                              .sort((a, b) => a[0].localeCompare(b[0]))
+                              .map(([label, value]) => ({ label, value }))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
 
                 <button
                   onClick={() => downloadRevenueCsv(revenue.completed)}
@@ -1375,16 +1446,24 @@ export default function Gwaro() {
             </span>
           </div>
           <div
-            className="flex items-center gap-1.5 px-2.5 py-1 text-sm rounded-sm"
+            className="flex items-center gap-1.5 px-2.5 py-1 text-sm rounded-sm flex-wrap"
             style={{ background: COLORS.paperDark, color: COLORS.ink }}
             title={`${wallet.label} (${role})`}
           >
             <Wallet size={14} />
-            <span>{wallet.label}: ${wallet.headline.toFixed(2)}</span>
-            {wallet.pending > 0 && (
-              <span className="text-xs" style={{ color: COLORS.ochre }}>
-                (+${wallet.pending.toFixed(2)} pending)
-              </span>
+            {wallet.entries.length === 0 ? (
+              <span>{wallet.label}: {formatMoney(0, "USD")}</span>
+            ) : (
+              wallet.entries.map((e) => (
+                <span key={e.currency} className="flex items-center gap-1">
+                  {wallet.label}: {formatMoney(e.headline, e.currency)}
+                  {e.pending > 0 && (
+                    <span className="text-xs" style={{ color: COLORS.ochre }}>
+                      (+{formatMoney(e.pending, e.currency)} pending)
+                    </span>
+                  )}
+                </span>
+              ))
             )}
           </div>
         </div>
@@ -1540,12 +1619,12 @@ export default function Gwaro() {
                 );
               }
 
-              const overCap = onProbation && Number(job.budget) > PROBATION_BUDGET_CAP;
+              const overCap = onProbation && Number(job.budget) > probationCapFor(job.currency);
               const overActive = onProbation && myActiveJobCount >= 1;
               const blockedReason = overActive
                 ? "Finish your current job first"
                 : overCap
-                ? `Over the $${PROBATION_BUDGET_CAP} limit for new workers`
+                ? `Over the ${formatMoney(probationCapFor(job.currency), job.currency)} limit for new workers`
                 : null;
               return (
               <JobCard key={job.id} job={job} id={`job-${job.id}`} highlighted={job.id === highlightJobId}>
@@ -1591,11 +1670,30 @@ export default function Gwaro() {
                   {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </Field>
+              <Field label="Currency">
+                <div className="flex gap-2">
+                  {Object.keys(CURRENCIES).map((c) => (
+                    <button
+                      type="button"
+                      key={c}
+                      onClick={() => setForm({ ...form, currency: c })}
+                      className="flex-1 text-sm px-3 py-2 rounded-sm"
+                      style={
+                        form.currency === c
+                          ? { background: COLORS.teal, color: COLORS.paper }
+                          : { background: COLORS.paperDark, color: COLORS.inkMuted }
+                      }
+                    >
+                      {CURRENCIES[c].label}
+                    </button>
+                  ))}
+                </div>
+              </Field>
               {(() => {
-                const priceInfo = averagePrice(jobs, form.category);
+                const priceInfo = averagePrice(jobs, form.category, form.currency);
                 return priceInfo ? (
                   <p className="text-xs -mt-2" style={{ color: COLORS.inkMuted }}>
-                    {form.category} jobs have averaged ${priceInfo.avg.toFixed(2)} across {priceInfo.count} completed job{priceInfo.count > 1 ? "s" : ""}.
+                    {form.category} jobs have averaged {formatMoney(priceInfo.avg, form.currency)} across {priceInfo.count} completed job{priceInfo.count > 1 ? "s" : ""}.
                   </p>
                 ) : null;
               })()}
@@ -1652,13 +1750,13 @@ export default function Gwaro() {
                 />
               </Field>
               <div className="grid grid-cols-2 gap-3">
-                <Field label={form.biddingEnabled ? "Target price (USD)" : "Budget (USD)"}>
+                <Field label={`${form.biddingEnabled ? "Target price" : "Budget"} (${CURRENCIES[form.currency].label})`}>
                   <input
                     type="number"
                     min="1"
                     value={form.budget}
                     onChange={(e) => setForm({ ...form, budget: e.target.value })}
-                    placeholder="10"
+                    placeholder={form.currency === "ZIG" ? "270" : "10"}
                     className="w-full px-3 py-2 text-sm rounded-sm"
                     style={{ background: "white", border: `1px solid ${COLORS.line}` }}
                   />
@@ -1742,9 +1840,11 @@ export default function Gwaro() {
                     )}
                     {role === "client" && job.status === "awaiting_payment" && (
                       <div className="text-xs rounded-sm px-3 py-2 w-56 text-right" style={{ background: COLORS.paperDark }}>
-                        <div style={{ color: COLORS.inkMuted }}>Send this job's budget via EcoCash to:</div>
+                        <div style={{ color: COLORS.inkMuted }}>
+                          Send this job's budget via EcoCash ({CURRENCIES[job.currency]?.label || "USD"}) to:
+                        </div>
                         <div className="text-sm font-medium my-1">{PLATFORM_ECOCASH_NUMBER}</div>
-                        <div className="font-medium">${Number(job.budget).toFixed(2)}</div>
+                        <div className="font-medium">{formatMoney(job.budget, job.currency)}</div>
                         <div className="mt-1" style={{ color: COLORS.inkMuted }}>
                           {job.worker_id
                             ? `We'll let ${job.worker_name} start once payment is confirmed.`
@@ -1820,14 +1920,14 @@ export default function Gwaro() {
                       <div className="text-right">
                         {job.payout_status === "sent" ? (
                           <>
-                            <div className="text-sm font-medium" style={{ color: COLORS.sage }}>Paid ${net.toFixed(2)}</div>
+                            <div className="text-sm font-medium" style={{ color: COLORS.sage }}>Paid {formatMoney(net, job.currency)}</div>
                             {job.payout_reference && (
                               <div className="text-xs" style={{ color: COLORS.inkMuted }}>ref: {job.payout_reference}</div>
                             )}
                           </>
                         ) : (
                           <div className="text-sm flex items-center justify-end gap-1" style={{ color: COLORS.ochre }}>
-                            <Loader2 size={12} className="animate-spin" /> Payment pending (${net.toFixed(2)})
+                            <Loader2 size={12} className="animate-spin" /> Payment pending ({formatMoney(net, job.currency)})
                           </div>
                         )}
                         {job.rating && <Stars value={job.rating} />}

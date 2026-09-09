@@ -52,12 +52,13 @@ export function useJobs(enabled) {
     };
   }, [enabled, refresh]);
 
-  async function postJob({ category, title, description, budget, deadline, clientId, clientName, biddingEnabled }) {
+  async function postJob({ category, title, description, budget, deadline, clientId, clientName, biddingEnabled, currency }) {
     const { error: insertError } = await supabase.from("jobs").insert({
       category,
       title,
       description,
       budget,
+      currency: currency === "ZIG" ? "ZIG" : "USD",
       deadline,
       client_id: clientId,
       client_name: clientName,

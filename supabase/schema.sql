@@ -123,6 +123,11 @@ create table if not exists public.jobs (
   title text not null,
   description text default '',
   budget numeric not null check (budget > 0),
+  -- USD or ZIG (Zimbabwe Gold) — a job's budget, bids, and payout are all
+  -- in this same currency end to end. No exchange rate is stored or used
+  -- anywhere in settlement logic; see supabase/migrations/0009_multicurrency.sql
+  -- for why (the official-vs-parallel rate gap is a real, persistent risk).
+  currency text not null default 'USD' check (currency in ('USD', 'ZIG')),
   deadline date,
   -- 'awaiting_payment' until an admin confirms the client's EcoCash payment
   -- arrived — see supabase/migrations/0004_payment_gate.sql for why this
@@ -227,19 +232,23 @@ create trigger jobs_enforce_payment_gate
 
 -- Worker approval + probationary cap: until a worker has 3 completed
 -- (approved) jobs, they can only have one active job at a time and can't
--- claim a job budgeted over $15. Also blocks claiming at all for an
--- unapproved worker. Keep probation_budget_cap in sync with
--- PROBATION_BUDGET_CAP in src/App.jsx.
+-- claim a job over the applicable currency's cap. Also blocks claiming at
+-- all for an unapproved worker. The USD/ZIG caps are two independent
+-- native constants, not one converted via an exchange rate — see
+-- supabase/migrations/0009_multicurrency.sql for why. Keep both in sync
+-- with PROBATION_BUDGET_CAP_USD/ZIG in src/App.jsx.
 create or replace function public.enforce_worker_claim_eligibility()
 returns trigger
 language plpgsql
 security definer
 as $$
 declare
-  probation_budget_cap numeric := 15;
+  probation_budget_cap_usd numeric := 15;
+  probation_budget_cap_zig numeric := 400;
   probation_job_threshold integer := 3;
   completed_count integer;
   active_count integer;
+  applicable_cap numeric;
 begin
   if auth.role() = 'authenticated' and old.worker_id is null and new.worker_id is not null then
     if not exists (select 1 from public.profiles where id = new.worker_id and worker_approved = true) then
@@ -257,8 +266,9 @@ begin
         raise exception 'New workers can only have one active job at a time until they have completed % jobs', probation_job_threshold;
       end if;
 
-      if new.budget > probation_budget_cap then
-        raise exception 'New workers can only claim jobs up to $% until they have completed % jobs', probation_budget_cap, probation_job_threshold;
+      applicable_cap := case when new.currency = 'ZIG' then probation_budget_cap_zig else probation_budget_cap_usd end;
+      if new.budget > applicable_cap then
+        raise exception 'New workers can only claim jobs up to % % until they have completed % jobs', new.currency, applicable_cap, probation_job_threshold;
       end if;
     end if;
   end if;
@@ -392,7 +402,7 @@ where role = 'worker' or id in (select worker_id from public.jobs where worker_i
 -- granted to anon so an unattended script can read it with just the public
 -- anon key. See supabase/migrations/0008_public_job_listings.sql.
 create or replace view public.public_job_listings as
-select id, category, title, description, budget, deadline, status, bidding_enabled, created_at
+select id, category, title, description, budget, currency, deadline, status, bidding_enabled, created_at
 from public.jobs
 where status in ('open', 'bidding');
 
