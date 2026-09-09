@@ -181,11 +181,9 @@ this platform has no business taking on. Concretely:
 Run [supabase/migrations/0009_multicurrency.sql](supabase/migrations/0009_multicurrency.sql)
 to enable this on an existing project.
 
-**Open question, not yet confirmed**: `PLATFORM_ECOCASH_NUMBER` is currently
-one number for both currencies, on the assumption EcoCash's USD and ZiG
-wallets sit behind the same phone number. Confirm this operationally — if a
-currency needs a different line, that constant needs to become a
-per-currency map.
+`PLATFORM_ECOCASH_NUMBER` is one number for both currencies — confirmed
+operationally that EcoCash's USD and ZiG wallets both sit behind the same
+phone number, so no per-currency split is needed there.
 
 ## Competitive bidding (optional, per job)
 
