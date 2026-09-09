@@ -274,6 +274,42 @@ function downloadRevenueCsv(completedJobs) {
   URL.revokeObjectURL(url);
 }
 
+// A single-hue horizontal bar chart for one metric across labeled entries
+// (revenue by category, revenue by month). One series, one hue — no
+// categorical color needed since each bar already carries its own label and
+// value as text, not just as a hover tooltip, so the chart stays a "table"
+// too rather than hiding data behind color/hover alone.
+function RevenueBarChart({ data }) {
+  const max = Math.max(...data.map((d) => d.value), 0.01);
+  return (
+    <div className="space-y-1.5">
+      {data.map((d) => (
+        <div key={d.label} className="flex items-center gap-2">
+          <span
+            className="text-xs w-32 shrink-0 truncate"
+            style={{ color: COLORS.inkMuted }}
+            title={d.label}
+          >
+            {d.label}
+          </span>
+          <div className="flex-1 rounded-sm" style={{ background: COLORS.paperDark, height: 14 }}>
+            <div
+              title={`$${d.value.toFixed(2)}`}
+              style={{
+                width: `${Math.max((d.value / max) * 100, 4)}%`,
+                height: "100%",
+                background: COLORS.teal,
+                borderRadius: 4,
+              }}
+            />
+          </div>
+          <span className="text-xs font-medium w-16 text-right shrink-0">${d.value.toFixed(2)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function StatusBadge({ status, flagged }) {
   if (flagged) {
     return (
@@ -1250,26 +1286,20 @@ export default function Gwaro() {
 
                 <div className="grid grid-cols-2 gap-4 mb-4">
                   <div>
-                    <div className="text-xs font-medium mb-1.5" style={{ color: COLORS.inkMuted }}>Revenue by category</div>
-                    <div className="space-y-1">
-                      {Object.entries(revenue.byCategory).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
-                        <div key={cat} className="text-xs flex justify-between">
-                          <span>{cat}</span>
-                          <span className="font-medium">${amt.toFixed(2)}</span>
-                        </div>
-                      ))}
-                    </div>
+                    <div className="text-xs font-medium mb-2" style={{ color: COLORS.inkMuted }}>Revenue by category</div>
+                    <RevenueBarChart
+                      data={Object.entries(revenue.byCategory)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([label, value]) => ({ label, value }))}
+                    />
                   </div>
                   <div>
-                    <div className="text-xs font-medium mb-1.5" style={{ color: COLORS.inkMuted }}>Revenue by month</div>
-                    <div className="space-y-1">
-                      {Object.entries(revenue.byMonth).sort((a, b) => a[0].localeCompare(b[0])).map(([month, amt]) => (
-                        <div key={month} className="text-xs flex justify-between">
-                          <span>{month}</span>
-                          <span className="font-medium">${amt.toFixed(2)}</span>
-                        </div>
-                      ))}
-                    </div>
+                    <div className="text-xs font-medium mb-2" style={{ color: COLORS.inkMuted }}>Revenue by month</div>
+                    <RevenueBarChart
+                      data={Object.entries(revenue.byMonth)
+                        .sort((a, b) => a[0].localeCompare(b[0]))
+                        .map(([label, value]) => ({ label, value }))}
+                    />
                   </div>
                 </div>
 
