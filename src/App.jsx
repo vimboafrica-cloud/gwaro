@@ -88,6 +88,27 @@ function workerReputation(jobs, workerId) {
   return { completedCount: completed.length, avg, ratedCount: rated.length };
 }
 
+// Real wallet figures, computed from actual job data — not a placeholder.
+// Worker: net earnings actually paid out, plus what's approved and pending
+// payout. Client: total actually spent (payment confirmed), excluding
+// anything later refunded via a cancelled job.
+function walletSummary(jobs, profile) {
+  if (profile.role === "worker") {
+    const mine = jobs.filter((j) => j.worker_id === profile.id);
+    const paid = mine
+      .filter((j) => j.payout_status === "sent")
+      .reduce((sum, j) => sum + payoutBreakdown(Number(j.budget)).net, 0);
+    const pending = mine
+      .filter((j) => j.payout_status === "pending")
+      .reduce((sum, j) => sum + payoutBreakdown(Number(j.budget)).net, 0);
+    return { label: "Earned", headline: paid, pending };
+  }
+  const spent = jobs
+    .filter((j) => j.client_id === profile.id && ["in_progress", "delivered", "approved"].includes(j.status))
+    .reduce((sum, j) => sum + Number(j.budget), 0);
+  return { label: "Spent", headline: spent, pending: 0 };
+}
+
 // Plain-language platform rules, not a lawyer-drafted legal document — get
 // this reviewed by one before treating it as enforceable in a real launch.
 const PLATFORM_RULES = [
@@ -820,8 +841,6 @@ export default function Gwaro() {
     biddingEnabled: false,
   });
 
-  const wallet = 42.5; // placeholder until real EcoCash/OneMoney integration
-
   // ---------------- render: not configured ----------------
   if (!supabaseConfigured) {
     return (
@@ -1071,6 +1090,7 @@ export default function Gwaro() {
 
   const role = profile.role;
   const jobs = jobsApi.jobs;
+  const wallet = walletSummary(jobs, profile);
   const flaggedJobs = jobs.filter((j) => j.flagged);
   const pendingPayouts = jobs.filter((j) => j.payout_status === "pending");
   const awaitingPayment = jobs.filter((j) => j.status === "awaiting_payment");
@@ -1354,9 +1374,18 @@ export default function Gwaro() {
               prototype
             </span>
           </div>
-          <div className="flex items-center gap-1.5 px-2.5 py-1 text-sm rounded-sm" style={{ background: COLORS.paperDark, color: COLORS.ink }}>
+          <div
+            className="flex items-center gap-1.5 px-2.5 py-1 text-sm rounded-sm"
+            style={{ background: COLORS.paperDark, color: COLORS.ink }}
+            title={`${wallet.label} (${role})`}
+          >
             <Wallet size={14} />
-            <span>${wallet.toFixed(2)}</span>
+            <span>{wallet.label}: ${wallet.headline.toFixed(2)}</span>
+            {wallet.pending > 0 && (
+              <span className="text-xs" style={{ color: COLORS.ochre }}>
+                (+${wallet.pending.toFixed(2)} pending)
+              </span>
+            )}
           </div>
         </div>
 

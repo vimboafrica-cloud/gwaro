@@ -262,9 +262,6 @@ feature existed).
 
 - **Payments**: tracked and manually reconciled (see above); no automatic
   EcoCash/OneMoney API call yet.
-- **Wallet balance**: still a hardcoded placeholder ($42.50), not tied to
-  real funds — this is separate from the payout tracking above and covers
-  a client's own account balance, which isn't implemented.
 - **Auth**: email-based magic link only; no phone/SMS sign-in yet (matches
   how most target users would actually reach the app, but costs money via
   an SMS provider like Twilio — deferred until closer to launch).
