@@ -401,10 +401,18 @@ where role = 'worker' or id in (select worker_id from public.jobs where worker_i
 -- what's already meant to be public once a job is open for workers to see,
 -- granted to anon so an unattended script can read it with just the public
 -- anon key. See supabase/migrations/0008_public_job_listings.sql.
-create or replace view public.public_job_listings as
+-- Dropped and recreated rather than CREATE OR REPLACE — Postgres won't let
+-- REPLACE insert a column in the middle of an existing view's column list
+-- (only append at the end), which matters when re-running this on a
+-- project whose view predates the `currency` column.
+drop view if exists public.public_job_listings;
+
+create view public.public_job_listings as
 select id, category, title, description, budget, currency, deadline, status, bidding_enabled, created_at
 from public.jobs
 where status in ('open', 'bidding');
+
+grant select on public.public_job_listings to anon;
 
 grant select on public.public_job_listings to anon;
 

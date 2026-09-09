@@ -62,8 +62,15 @@ end;
 $$;
 
 -- public_job_listings needs to expose currency too, for accurate
--- advertisement drafts.
-create or replace view public.public_job_listings as
+-- advertisement drafts. Dropped and recreated rather than CREATE OR
+-- REPLACE, since Postgres won't let REPLACE insert a column in the middle
+-- of an existing view's column list (only append at the end) — recreating
+-- also means the anon grant needs to be re-applied.
+drop view if exists public.public_job_listings;
+
+create view public.public_job_listings as
 select id, category, title, description, budget, currency, deadline, status, bidding_enabled, created_at
 from public.jobs
 where status in ('open', 'bidding');
+
+grant select on public.public_job_listings to anon;
