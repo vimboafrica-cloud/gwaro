@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Wallet, FileText, PenLine, Mic, Briefcase, Clock, CheckCircle2,
   Flag, Star, Inbox, PlusCircle, ArrowRight, Loader2, AlertTriangle, Mail, Smartphone,
@@ -59,6 +59,9 @@ const CATEGORIES = Object.keys(CATEGORY_META);
 // The EcoCash number clients pay job budgets into (shown on every
 // awaiting-payment job in the client's "My jobs" view).
 const PLATFORM_ECOCASH_NUMBER = "0773141598";
+
+// TODO: update once a real custom domain is set up.
+const PLATFORM_URL = "https://gwaro-8nol.vercel.app";
 
 // Must match the same-named constants in the enforce_worker_claim_eligibility
 // trigger (supabase/migrations/0006_quality_assurance.sql) — these are only
@@ -188,7 +191,8 @@ function generateAnnouncement(job) {
       ? `target price ~$${Number(job.budget).toFixed(0)}, open for bids`
       : `budget: $${Number(job.budget).toFixed(0)}`;
   const desc = job.description ? ` ${job.description}.` : "";
-  return `New on Gwaro: ${job.category} — ${job.title}.${desc} ${priceLine}. Apply on Gwaro if interested!`;
+  const link = `${PLATFORM_URL}/?job=${encodeURIComponent(job.id)}`;
+  return `New on Gwaro: ${job.category} — ${job.title}.${desc} ${priceLine}. Apply here: ${link}`;
 }
 
 function CopyAnnouncementButton({ job }) {
@@ -327,13 +331,18 @@ function Stars({ value, onRate }) {
   );
 }
 
-function JobCard({ job, children }) {
+function JobCard({ job, children, id, highlighted }) {
   const meta = CATEGORY_META[job.category] || { icon: FileText };
   const Icon = meta.icon;
   return (
     <div
+      id={id}
       className="p-4 rounded-sm flex items-start justify-between gap-4"
-      style={{ background: "white", border: `1px solid ${COLORS.line}` }}
+      style={{
+        background: "white",
+        border: `1px solid ${highlighted ? COLORS.teal : COLORS.line}`,
+        boxShadow: highlighted ? `0 0 0 2px ${COLORS.tealSoft}` : "none",
+      }}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1.5 flex-wrap">
@@ -751,6 +760,20 @@ export default function Gwaro() {
   const [tab, setTab] = useState("browse");
   const [viewMode, setViewMode] = useState("app"); // "app" | "admin"
   const pendingWorkersApi = useAdminPendingWorkers(viewMode === "admin");
+
+  // Deep link support: an announcement's "Apply here" link is
+  // {PLATFORM_URL}/?job=<id> — once jobs are loaded, jump to Browse and
+  // scroll/highlight that job so a click from a WhatsApp/Facebook post
+  // lands right on it instead of a generic homepage.
+  const [highlightJobId] = useState(() => new URLSearchParams(window.location.search).get("job"));
+  useEffect(() => {
+    if (!highlightJobId || jobsApi.loading || jobsApi.jobs.length === 0) return;
+    const match = jobsApi.jobs.find((j) => j.id === highlightJobId);
+    if (!match) return;
+    setTab("browse");
+    const el = document.getElementById(`job-${highlightJobId}`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightJobId, jobsApi.loading, jobsApi.jobs]);
 
   const [form, setForm] = useState({
     category: CATEGORIES[0],
@@ -1439,7 +1462,7 @@ export default function Gwaro() {
               if (job.status === "bidding") {
                 const myBid = role === "worker" ? (job.bids || []).find((b) => b.worker_id === profile.id && b.status === "pending") : null;
                 return (
-                  <JobCard key={job.id} job={job}>
+                  <JobCard key={job.id} job={job} id={`job-${job.id}`} highlighted={job.id === highlightJobId}>
                     {role === "worker" ? (
                       <BidForm
                         job={job}
@@ -1466,7 +1489,7 @@ export default function Gwaro() {
                 ? `Over the $${PROBATION_BUDGET_CAP} limit for new workers`
                 : null;
               return (
-              <JobCard key={job.id} job={job}>
+              <JobCard key={job.id} job={job} id={`job-${job.id}`} highlighted={job.id === highlightJobId}>
                 {role === "worker" ? (
                   blockedReason ? (
                     <span className="text-xs" style={{ color: COLORS.inkMuted }}>{blockedReason}</span>
